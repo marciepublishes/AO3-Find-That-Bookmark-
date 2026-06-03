@@ -1,0 +1,339 @@
+@font-face {
+  font-family: "Lexend";
+  src: url("fonts/Lexend-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Lexend";
+  src: url("fonts/Lexend-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light dark;
+  --color-bg: #89e0c9;
+  --color-surface: #cce089;
+  --color-border: rgba(0, 0, 0, 0.18);
+  --color-text-primary: #1c1a17;
+  --color-text-secondary: #3a3530;
+  --color-text-muted: #5a6050;
+  --color-purple: #9d89e0;
+  --color-pink: #e089a0;
+  --radius-md: 4px;
+  --font-sans: "Barlow", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
+  font-size: 14px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 300px;
+  color: var(--color-text-primary);
+  background: #A8BBA9;
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.popup {
+  position: relative;
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  text-align: center;
+}
+
+.popup__titlerow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.info-toggle {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(65, 101, 62, 0.45);
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(65, 101, 62, 0.65);
+  font-family: "Lexend", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.info-toggle:hover,
+.info-toggle:focus-visible {
+  color: #41653E;
+  border-color: #41653E;
+}
+
+.info-panel {
+  display: none;
+  gap: 8px;
+  text-align: left;
+  font-family: "Lexend", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.popup--info-open .popup__head,
+.popup--info-open .counts,
+.popup--info-open .hint {
+  display: none;
+}
+
+.popup--info-open .info-panel {
+  display: grid;
+}
+
+.info-panel__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  color: #41653E;
+}
+
+.info-panel__subhead {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #41653E;
+}
+
+.info-panel p {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: #34412f;
+  text-align: left;
+}
+
+.info-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(65, 101, 62, 0.2);
+}
+
+.info-footer__link {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: "Lexend", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  color: #587156;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.info-footer__link:hover,
+.info-footer__link:focus-visible {
+  text-decoration: underline;
+}
+
+.info-footer__link--disabled {
+  opacity: 0.45;
+  cursor: default;
+  text-decoration: none;
+}
+
+.info-footer__sep {
+  color: rgba(88, 113, 86, 0.5);
+  font-size: 11px;
+}
+
+.info-footer__note {
+  margin: 0;
+  text-align: center;
+}
+
+.info-footer__note-text {
+  margin: 0;
+  font-family: "Lexend", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 11.5px;
+  font-weight: 400;
+  font-style: italic;
+  line-height: 1.45;
+  color: #4a5a48;
+}
+
+.info-footer__share {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  background: #41653E;
+  color: #A8BBA9;
+  font-family: "Lexend", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.info-footer__share:hover,
+.info-footer__share:focus-visible {
+  opacity: 0.85;
+}
+
+.info-panel__close {
+  justify-self: center;
+  margin-top: 8px;
+  padding: 6px 14px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: #41653E;
+  color: #A8BBA9;
+  font-family: "Lexend", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.info-panel__close:hover {
+  opacity: 0.85;
+}
+
+.popup__head {
+  display: grid;
+  gap: 3px;
+  font-family: "Lexend", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.popup__title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #41653E;
+  white-space: nowrap;
+}
+
+.popup__aka {
+  margin: 0;
+  font-size: 11px;
+  font-style: italic;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: #587156;
+}
+
+.popup__tagline {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: #587156;
+  /* Wraps only at the <wbr> word boundaries in the markup, so it breaks
+     between whole words (e.g. "work" / "whichone") instead of mid-word. */
+}
+
+.counts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.count {
+  display: grid;
+  gap: 2px;
+  padding: 14px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: #41653E;
+  color: #A8BBA9;
+  text-decoration: none;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.count[href]:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 10px var(--color-border);
+}
+
+.count:not([href]) {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.count__num {
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.count__label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #A8BBA9;
+}
+
+.count--deleted {
+  border-top: 3px solid #587156;
+}
+
+.count--orphaned {
+  border-top: 3px solid #587156;
+}
+
+.hint {
+  margin: 0;
+  font-family: "Lexend", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: rgba(88, 113, 86, 0.65);
+}
+
+.hint--alert {
+  font-weight: 600;
+  color: #EC1F32;
+  cursor: pointer;
+}
+
+.hint--alert:hover {
+  text-decoration: underline;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #073642;
+    --color-surface: #0a3f4e;
+    --color-border: rgba(255, 255, 255, 0.12);
+    --color-text-primary: #ede9e1;
+    --color-text-secondary: #93a8ae;
+    --color-text-muted: #8aa6ad;
+  }
+}

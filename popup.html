@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AO3 Lost and Found</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="popup">
+      <header class="popup__head">
+        <div class="popup__titlerow">
+          <h1 class="popup__title">AO3 Find That Bookmark!</h1>
+          <button id="infoButton" class="info-toggle" type="button" aria-label="How it works" aria-controls="infoPanel" aria-expanded="false" title="How it works">?</button>
+        </div>
+        <p class="popup__aka">a.k.a.</p>
+        <p class="popup__tagline">ohno<wbr>ithink<wbr>someone<wbr>deleted<wbr>their<wbr>work<wbr>whichone<wbr>isit?<wbr>wait<wbr>iknow<wbr>where<wbr>to<wbr>go!</p>
+      </header>
+
+      <div class="counts">
+        <a id="deletedCount" class="count count--deleted" target="_blank" rel="noreferrer">
+          <span id="deletedNum" class="count__num">0</span>
+          <span class="count__label">Deleted</span>
+        </a>
+        <a id="orphanedCount" class="count count--orphaned" target="_blank" rel="noreferrer">
+          <span id="orphanedNum" class="count__num">0</span>
+          <span class="count__label">Orphaned</span>
+        </a>
+      </div>
+
+      <p id="hint" class="hint"></p>
+
+      <section id="infoPanel" class="info-panel" aria-label="How Find That Bookmark works">
+        <h2 class="info-panel__title">How "Find That Bookmark!" works</h2>
+        <p>Find That Bookmark keeps a small, local record of the works you've bookmarked on AO3. It saves just the details AO3 already shows on your bookmarks page, such as title, author, tags, and summary.</p>
+        <p>Every so often it checks whether those works are still up. If one has been deleted or orphaned, it flags it, so you can finally answer "wait, which one was that?".</p>
+        <h3 class="info-panel__subhead">This extension is throttled on purpose.</h3>
+        <p>Checking for deleted bookmarks happens every so often and at random intervals within a range of time, which is a low intensity way to interact with AO3's servers. The technical trade off is that a freshly deleted work won't be reported the instant it disappears. It also waits to confirm a work is without a doubt gone, rather than missing for a moment, before flagging it. In practice, a deletion is identified on the extension within a day or two rather than instantaneously.</p>
+        <h3 class="info-panel__subhead">In terms of privacy, all information is yours!</h3>
+        <p>Nothing is uploaded, shared, or sent anywhere. There are no servers, and it can't bring deleted works back (only AO3 has those). It just tells you which of yours have gone missing.</p>
+
+        <button id="infoClose" class="info-panel__close" type="button">Got it</button>
+
+        <div class="info-footer">
+          <a id="reviewLink" class="info-footer__link" target="_blank" rel="noreferrer">Leave a review</a>
+          <span class="info-footer__sep">&middot;</span>
+          <a id="bugLink" class="info-footer__link">Found a bug?</a>
+          <span class="info-footer__sep">&middot;</span>
+          <button id="featureLink" class="info-footer__link" type="button" aria-expanded="false" aria-controls="featureNote">Feature request</button>
+        </div>
+        <div id="featureNote" class="info-footer__note" hidden>
+          <p class="info-footer__note-text">This extension is designed to stay fairly simple, but if you have an idea I'm all ears!</p>
+          <a id="featureMail" class="info-footer__share">Share it</a>
+        </div>
+      </section>
+    </main>
+    <script src="modules/constants.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

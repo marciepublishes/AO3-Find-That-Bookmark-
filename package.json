@@ -1,0 +1,13 @@
+{
+  "name": "ao3-lost-and-found",
+  "version": "1.2.12",
+  "private": true,
+  "description": "Checks your own AO3 bookmarks and flags which have been deleted or orphaned, so you can see what's gone instead of wondering. Runs entirely on your device; it does not copy, store, or re-host works and cannot recover deleted content.",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}
