@@ -54,11 +54,11 @@ describe("ImportManager parser", () => {
       checkFailCount: 0,
       lastChecked: null,
       deletedAt: null,
-      orphanedAt: null,
       pinnedToTop: false,
       notified: false
     });
     expect(typeof work.importedAt).toBe("number");
+    expect(work.orphanedAt).toBeUndefined();
   });
 
   test("parseBookmarkBlurb handles minimal metadata without inventing values", () => {
@@ -82,8 +82,11 @@ describe("ImportManager parser", () => {
       bookmarkTags: [],
       dateBookmarked: "02 Feb 2025",
       workLastUpdated: "",
-      originalPosition: 2
+      originalPosition: 2,
+      status: "active",
+      deletedAt: null
     });
+    expect(work.orphanedAt).toBeUndefined();
   });
 
   test("logged-in detection accepts user menu markers and rejects anonymous pages", () => {

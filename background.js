@@ -2,6 +2,7 @@ if (typeof importScripts === "function" && !globalThis.AO3LostAndFoundDB) {
   importScripts("lib/dexie.min.js");
   importScripts("modules/constants.js");
   importScripts("modules/db.js");
+  importScripts("modules/bookmark-parser.js");
   importScripts("modules/import-manager.js");
   importScripts("modules/check-manager.js");
 }
@@ -47,10 +48,9 @@ const DEFAULT_SETTINGS = {
   importDelayMax: 8000,
   checkDelayMin: 3000,
   checkDelayMax: 6000,
-  checkFrequencyMinutes: 720,
+  checkFrequencyMinutes: 30,
   autoCheckEnabled: true,
-  deletedColor: "#e089a0",
-  orphanedColor: "#9d89e0"
+  deletedColor: "#e089a0"
 };
 
 async function getMeta(key) {
@@ -67,29 +67,25 @@ async function countByStatus(status) {
 }
 
 async function getStats() {
-  const [total, active, deleted, orphaned, lastChecked] = await Promise.all([
+  const [total, active, deleted, lastChecked] = await Promise.all([
     db.works.count(),
     countByStatus(C.STATUS.ACTIVE),
     countByStatus(C.STATUS.DELETED),
-    countByStatus(C.STATUS.ORPHANED),
     db.works.orderBy("lastChecked").last()
   ]);
 
-  const lost = deleted + orphaned;
   let acknowledged = Number(await getMeta(C.META.LOST_ACKNOWLEDGED)) || 0;
-  if (acknowledged > lost) {
-    // A previously-lost work came back; keep the baseline in step.
-    acknowledged = lost;
+  if (acknowledged > deleted) {
+    // A previously-deleted work came back; keep the baseline in step.
+    acknowledged = deleted;
     await setMeta(C.META.LOST_ACKNOWLEDGED, acknowledged);
   }
-  const newLost = Math.max(0, lost - acknowledged);
+  const newLost = Math.max(0, deleted - acknowledged);
 
   return {
     total,
     active,
     deleted,
-    orphaned,
-    lost,
     newLost,
     lastChecked: lastChecked?.lastChecked ?? null,
     username: await getMeta(C.META.USERNAME),
@@ -105,11 +101,7 @@ async function acknowledgeLostWorks() {
 }
 
 async function getLostWorkCount() {
-  const [deleted, orphaned] = await Promise.all([
-    countByStatus(C.STATUS.DELETED),
-    countByStatus(C.STATUS.ORPHANED)
-  ]);
-  return deleted + orphaned;
+  return countByStatus(C.STATUS.DELETED);
 }
 
 const BADGE_BG_COLOR = "#EC1F32";
@@ -122,7 +114,7 @@ async function updateBadgeCount() {
   await actionApi?.setBadgeText?.({ text: count > 0 ? String(count) : "" });
   await actionApi?.setTitle?.({
     title: count > 0
-      ? `AO3 Find That Bookmark! — ${count} bookmarked work${count === 1 ? "" : "s"} may be deleted or orphaned. Click to investigate.`
+      ? `AO3 Find That Bookmark! — ${count} bookmarked work${count === 1 ? "" : "s"} may be deleted. Click to investigate.`
       : "AO3 Find That Bookmark!"
   });
   return count;
@@ -138,21 +130,16 @@ async function getBookmarksUrl() {
 async function fireLostWorkNotification(work) {
   if (work.notified) return;
 
-  const status = work.status === C.STATUS.ORPHANED ? C.STATUS.ORPHANED : C.STATUS.DELETED;
   const author = Array.isArray(work.authors) && work.authors.length > 0
     ? work.authors.join(", ")
     : "Unknown author";
-  const title = status === C.STATUS.ORPHANED ? "Orphaned Work Detected" : "Lost Work Detected";
-  const message = status === C.STATUS.ORPHANED
-    ? `${work.title} by ${author} has been orphaned on AO3.`
-    : `${work.title} by ${author} has been deleted from AO3.`;
 
   await db.works.update(work.workId, { notified: true });
-  notificationsApi?.create?.(`ao3-lost-and-found-${status}-${work.workId}`, {
+  notificationsApi?.create?.(`ao3-lost-and-found-${C.STATUS.DELETED}-${work.workId}`, {
     type: "basic",
     iconUrl: "icons/icon-128.png",
-    title,
-    message
+    title: "Deleted Work Detected",
+    message: `${work.title} by ${author} has been deleted from AO3.`
   });
 }
 
@@ -163,12 +150,9 @@ async function getDeletedWorksForPage({ workIds = [], pageNumber = 1, pageSize =
   const firstPosition = (page - 1) * size + 1;
   const lastPosition = page * size;
 
-  const [deleted, orphaned] = await Promise.all([
-    db.works.where("status").equals(C.STATUS.DELETED).toArray(),
-    db.works.where("status").equals(C.STATUS.ORPHANED).toArray()
-  ]);
+  const deleted = await db.works.where("status").equals(C.STATUS.DELETED).toArray();
 
-  return [...deleted, ...orphaned]
+  return deleted
     .filter((work) => {
       if (idSet.has(String(work.workId))) return true;
       if (work.pinnedToTop) return true;
@@ -184,7 +168,7 @@ async function getDeletedWorksForPage({ workIds = [], pageNumber = 1, pageSize =
 }
 
 async function getLostWorksByStatus({ status, pageNumber = 1, pageSize = 20 }) {
-  if (status !== C.STATUS.DELETED && status !== C.STATUS.ORPHANED) {
+  if (status !== C.STATUS.DELETED) {
     return { works: [], total: 0, pageNumber: 1, pageSize: Number(pageSize) || 20 };
   }
 
@@ -256,16 +240,21 @@ async function reconcileImport() {
 // Opportunistic capture: merge in the bookmark blurbs the user is actually
 // viewing, with no extra page fetches. Reuses the import parser and the
 // merge-safe writer, so it never clobbers detection state.
-async function snapshotBookmarks({ blurbs = [], username } = {}) {
-  const parse = globalThis.AO3LostAndFoundImport.parseBookmarkBlurb;
-  const records = [];
-  for (const item of Array.isArray(blurbs) ? blurbs : []) {
-    const record = parse(item?.html, { originalPosition: Number(item?.position) || 1 });
-    if (record) records.push(record);
+async function snapshotBookmarks({ records = [], blurbs = [], username } = {}) {
+  // The content script now parses blurbs against the live DOM and sends
+  // structured records. Validate the shape (it comes from a content script).
+  let incoming = (Array.isArray(records) ? records : []).filter((record) => record && record.workId);
+
+  // Back-compat: an older content script may still send raw blurb HTML.
+  if (incoming.length === 0 && Array.isArray(blurbs) && blurbs.length > 0) {
+    const parse = globalThis.AO3LostAndFoundParser.parseBookmarkBlurb;
+    incoming = blurbs
+      .map((item) => parse(item?.html, { originalPosition: Number(item?.position) || 1 }))
+      .filter(Boolean);
   }
 
-  if (records.length > 0) {
-    await importManager.writeChunk(records);
+  if (incoming.length > 0) {
+    await importManager.writeChunk(incoming);
   }
 
   const name = String(username || "").trim();
@@ -274,7 +263,7 @@ async function snapshotBookmarks({ blurbs = [], username } = {}) {
   }
 
   await updateBadgeCount();
-  return { success: true, captured: records.length };
+  return { success: true, captured: incoming.length };
 }
 
 function broadcast(message) {
@@ -384,7 +373,7 @@ async function runScheduledMaintenance(alarm) {
   await reconcileImport();
 
   // Sweep in any newly added bookmarks first (cheap — usually one request),
-  // then run the deletion/orphan check over the up-to-date set.
+  // then run the deletion check over the up-to-date set.
   const username = await getMeta(C.META.USERNAME);
   const status = await getMeta(C.META.IMPORT_STATUS);
   if (username && status === C.IMPORT_STATE.COMPLETE) {
@@ -394,7 +383,12 @@ async function runScheduledMaintenance(alarm) {
       console.error("AO3 Lost and Found incremental sweep failed.", error);
     }
   }
-  await checkManager.runBatch({ manual: false, alarm });
+
+  // Size each run so a full pass over the library finishes in ~a day.
+  const settings = await getSettings();
+  const total = await db.works.count();
+  const batchSize = globalThis.AO3LostAndFoundCheck.computeBatchSize(total, settings.checkFrequencyMinutes);
+  await checkManager.runBatch({ manual: false, alarm, batchSize });
 }
 
 alarmApi?.onAlarm?.addListener((alarm) => {

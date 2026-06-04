@@ -2,14 +2,14 @@
 
 Find That Bookmark keeps a small, local record of the works you've bookmarked on AO3. It saves just the details AO3 already shows on your bookmarks page, such as title, author, tags, and summary.
 
-Every so often it checks whether those works are still up. If one has been deleted or orphaned, it flags it, so you can finally answer "wait, which one was that?".
+Every so often it checks whether those works are still up. If one has been deleted, it flags it, so you can finally answer "wait, which one was that?".
 
 ## What it does
 
 - Reads your own AO3 bookmarks while you're logged in, and keeps a local copy of the details AO3 already shows there.
 - Checks, a little at a time, whether each bookmarked work is still up.
-- Flags works that have been deleted or orphaned, and shows their saved details back on your bookmarks page so you can see which ones went missing.
-- Adds Deleted and Orphaned entries to your bookmarks sidebar so you can filter to just those works.
+- Flags works that have been deleted, and shows their saved details back on your bookmarks page so you can see which ones went missing.
+- Adds a Deleted entry to your bookmarks sidebar so you can filter to just those works.
 - Links out to the Wayback Machine in case you want to look for an archived copy.
 
 ## What it does not do

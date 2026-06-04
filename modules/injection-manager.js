@@ -16,12 +16,9 @@ const { STATUS } = Constants;
 
 function reconstructBlurb(work, documentRef = globalThis.document) {
   const item = documentRef.createElement("li");
-  const status = work.status === STATUS.ORPHANED ? STATUS.ORPHANED : STATUS.DELETED;
-  const detectedAt = status === STATUS.ORPHANED ? work.orphanedAt : work.deletedAt;
-  const statusLabel = status === STATUS.ORPHANED ? "Recently Orphaned" : "Deleted";
-  const tagLabel = status === STATUS.ORPHANED ? "Orphaned Work" : "Deleted Work";
+  const detectedAt = work.deletedAt;
 
-  item.className = `bookmark blurb group ao3-lost-found ao3-lost-found--${status}`;
+  item.className = `bookmark blurb group ao3-lost-found ao3-lost-found--${STATUS.DELETED}`;
   item.dataset.workId = work.workId;
   item.dataset.originalPosition = String(work.originalPosition ?? "");
   item.innerHTML = `
@@ -38,7 +35,7 @@ function reconstructBlurb(work, documentRef = globalThis.document) {
       </ul>
     </div>
     <p class="ao3-lost-found__status">
-      <span class="ao3-lost-found__badge">${statusLabel}</span>
+      <span class="ao3-lost-found__badge">Deleted</span>
       <span>Detected: ${escapeHtml(formatDate(detectedAt))}</span>
     </p>
     <h6 class="landmark heading">Tags</h6>
@@ -46,7 +43,7 @@ function reconstructBlurb(work, documentRef = globalThis.document) {
       ${(work.relationships || []).map((tag) => `<li><a class="tag">${escapeHtml(tag)}</a></li>`).join("")}
       ${(work.characters || []).map((tag) => `<li><a class="tag">${escapeHtml(tag)}</a></li>`).join("")}
       ${(work.freeTags || []).map((tag) => `<li><a class="tag">${escapeHtml(tag)}</a></li>`).join("")}
-      <li><a class="tag">${tagLabel}</a></li>
+      <li><a class="tag">Deleted Work</a></li>
     </ul>
     <blockquote class="userstuff summary">${escapeHtml(work.summary || "")}</blockquote>
     <dl class="stats">
@@ -73,7 +70,6 @@ function injectStyles(documentRef = globalThis.document, settings = {}) {
   if (existing) existing.remove();
 
   const deletedColor = sanitizeColor(settings.deletedColor, "#e089a0");
-  const orphanedColor = sanitizeColor(settings.orphanedColor, "#9d89e0");
 
   const style = documentRef.createElement("style");
   style.id = "ao3-lost-found-styles";
@@ -85,10 +81,6 @@ function injectStyles(documentRef = globalThis.document, settings = {}) {
       color: #1c1a17;
       padding: 0.75em;
       position: relative;
-    }
-    .ao3-lost-found--orphaned {
-      border-color: ${orphanedColor};
-      box-shadow: 0 0 12px ${orphanedColor};
     }
     .ao3-lost-found__status,
     .ao3-lost-found__actions {
@@ -106,10 +98,6 @@ function injectStyles(documentRef = globalThis.document, settings = {}) {
       font-weight: 700;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-    }
-    .ao3-lost-found--orphaned .ao3-lost-found__badge {
-      color: #1c1a17;
-      background: ${orphanedColor};
     }
     .ao3-lost-found__return {
       border: 1px solid currentColor;
@@ -135,9 +123,8 @@ function injectDashboardSection(documentRef = globalThis.document, locationRef =
   dashboard.querySelectorAll("li[data-ao3-lost-found-dashboard='true']").forEach((element) => element.remove());
 
   const deletedItem = createDashboardItem(documentRef, STATUS.DELETED, "Deleted", counts.deleted, locationRef);
-  const orphanedItem = createDashboardItem(documentRef, STATUS.ORPHANED, "Orphaned", counts.orphaned, locationRef);
 
-  // Drop them directly beneath the "Gifts" entry (which lives in the listing
+  // Drop it directly beneath the "Gifts" entry (which lives in the listing
   // list, not the first nav list). Fall back to the first nav list otherwise.
   const giftsItem = findNavItemByHref(dashboard, "/gifts");
   const targetList = giftsItem?.parentNode || dashboard.querySelector("ul.navigation.actions");
@@ -147,9 +134,8 @@ function injectDashboardSection(documentRef = globalThis.document, locationRef =
 
   if (giftsItem) {
     targetList.insertBefore(deletedItem, giftsItem.nextSibling);
-    targetList.insertBefore(orphanedItem, deletedItem.nextSibling);
   } else {
-    targetList.append(deletedItem, orphanedItem);
+    targetList.append(deletedItem);
   }
   return true;
 }
@@ -182,16 +168,10 @@ function updateDashboardCounts(dashboard, counts = {}) {
   const links = [...dashboard.querySelectorAll("a")];
   const deletedLink = dashboard.querySelector("[data-ao3-lost-found-count='deleted']")
     || links.find((link) => getDashboardLinkStatus(link.textContent) === STATUS.DELETED);
-  const orphanedLink = dashboard.querySelector("[data-ao3-lost-found-count='orphaned']")
-    || links.find((link) => getDashboardLinkStatus(link.textContent) === STATUS.ORPHANED);
 
   if (deletedLink) {
     deletedLink.dataset.ao3LostFoundCount = STATUS.DELETED;
     deletedLink.textContent = formatDashboardLabel("Deleted", counts.deleted);
-  }
-  if (orphanedLink) {
-    orphanedLink.dataset.ao3LostFoundCount = STATUS.ORPHANED;
-    orphanedLink.textContent = formatDashboardLabel("Orphaned", counts.orphaned);
   }
 }
 
@@ -205,24 +185,21 @@ function buildBookmarkTagUrl(tagName, locationRef = globalThis.location) {
 }
 
 function buildLostFoundFilterUrl(status, locationRef = globalThis.location) {
-  const normalizedStatus = status === STATUS.ORPHANED ? STATUS.ORPHANED : STATUS.DELETED;
   const match = String(locationRef.pathname || "").match(/^\/users\/([^/]+)/);
   const username = match?.[1] || getUsernameFromPath(locationRef);
 
-  return `/users/${username}/bookmarks?ao3_lost_found=${normalizedStatus}`;
+  return `/users/${username}/bookmarks?ao3_lost_found=${STATUS.DELETED}`;
 }
 
 function getDashboardLinkStatus(text) {
   const label = String(text || "").trim();
   if (/^deleted(?:\s+work)?(?:\s*\(\d+\))?$/i.test(label)) return STATUS.DELETED;
-  if (/^orphaned(?:\s+work)?(?:\s*\(\d+\))?$/i.test(label)) return STATUS.ORPHANED;
   return null;
 }
 
 function getLostFoundFilter(locationRef = globalThis.location) {
   const params = new URLSearchParams(locationRef.search || "");
-  const status = params.get("ao3_lost_found");
-  return status === STATUS.DELETED || status === STATUS.ORPHANED ? status : null;
+  return params.get("ao3_lost_found") === STATUS.DELETED ? STATUS.DELETED : null;
 }
 
 function updateFilteredHeading(documentRef, { status, total, pageNumber, pageSize, username }) {
@@ -233,8 +210,8 @@ function updateFilteredHeading(documentRef, { status, total, pageNumber, pageSiz
   return true;
 }
 
-function formatFilteredHeading({ status, total, pageNumber = 1, pageSize = 20, username = "" }) {
-  const label = status === STATUS.ORPHANED ? "found orphaned works" : "found deleted works";
+function formatFilteredHeading({ total, pageNumber = 1, pageSize = 20, username = "" }) {
+  const label = "found deleted works";
   const count = Number(total) || 0;
   const userText = username ? ` in ${username}'s bookmarks` : "";
 
@@ -278,6 +255,39 @@ function getPageNumber(locationRef = globalThis.location) {
 
 function getPageSize(renderedCount) {
   return renderedCount > 0 ? renderedCount : 20;
+}
+
+// The work id for a rendered blurb. AO3 puts it in a `work-<id>` class on the
+// <li> (the element id is `bookmark_<bookmarkId>`, NOT the work id). Falls back
+// to the title link inside the heading.
+function workIdFromBlurb(element) {
+  if (!element) return "";
+  const fromClass = (String(element.className || "").match(/\bwork-(\d+)\b/) || [])[1];
+  if (fromClass) return fromClass;
+  // Scope to a direct heading link so the status "N Bookmarks" count link
+  // (/works/<id>/bookmarks) and other extensions' injected links don't win.
+  const link = element.querySelector?.("h4.heading > a[href^='/works/']")
+    || element.querySelector?.("h4.heading a[href^='/works/']");
+  const href = link?.getAttribute?.("href") || "";
+  return (href.match(/\/works\/(\d+)/) || [])[1] || "";
+}
+
+// The still-rendered (alive) bookmark blurbs on the current page, with their
+// work ids and 1-based positions, used to place injected deleted blurbs back at
+// their original spots. Excludes our own injected blurbs.
+function getRenderedWorkEntries(documentRef = globalThis.document, locationRef = globalThis.location) {
+  const blurbs = [...documentRef.querySelectorAll("li.bookmark.blurb, li.work.blurb")]
+    .filter((element) => !element.classList?.contains("ao3-lost-found"));
+  const pageNumber = getPageNumber(locationRef);
+  const pageSize = blurbs.length || 20;
+
+  return blurbs
+    .map((element, index) => ({
+      element,
+      workId: workIdFromBlurb(element),
+      position: (pageNumber - 1) * pageSize + index + 1
+    }))
+    .filter((entry) => entry.workId);
 }
 
 function waybackUrl(workId) {
@@ -332,7 +342,9 @@ globalThis.AO3LostAndFoundInjection = {
   getLostFoundFilter,
   getPageNumber,
   getPageSize,
+  getRenderedWorkEntries,
   getUsernameFromPath,
+  workIdFromBlurb,
   injectDashboardSection,
   injectStyles,
   placeBlurb,

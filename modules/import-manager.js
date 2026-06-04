@@ -20,6 +20,11 @@ var Constants = globalThis.AO3LostAndFoundConstants
   || (typeof require === "function" ? require("./constants") : {});
 var { META, STATUS, EVENTS, IMPORT_STATE } = Constants;
 
+// Record parsing lives in the shared bookmark-parser module so the worker
+// import walk and the content-script snapshot path produce identical records.
+var Parser = globalThis.AO3LostAndFoundParser
+  || (typeof require === "function" ? require("./bookmark-parser") : {});
+
 class ImportManager {
   constructor({
     bus,
@@ -169,7 +174,7 @@ class ImportManager {
       if (!isLoggedInBookmarkPage(html)) break; // logged out — stay quiet
       consecutive429s = 0;
 
-      const parsed = parseBookmarkPage(html, { pageNumber: page, originalPositionOffset: positionOffset });
+      const parsed = Parser.parseBookmarkPage(html, { pageNumber: page, originalPositionOffset: positionOffset });
       if (parsed.works.length === 0) break;
 
       const existing = await this.db.works.bulkGet(parsed.works.map((work) => work.workId));
@@ -221,7 +226,7 @@ class ImportManager {
 
       this.consecutive429s = 0;
 
-      const parsedPage = parseBookmarkPage(html, {
+      const parsedPage = Parser.parseBookmarkPage(html, {
         pageNumber: currentPage,
         originalPositionOffset
       });
@@ -284,9 +289,9 @@ class ImportManager {
     if (!works.length) return;
 
     // Re-imports must not clobber detection state. Preserve the fields the
-    // check-manager owns (status, fail counts, deleted/orphaned markers,
-    // notification + pin flags) on works we already track, and only refresh the
-    // parsed metadata and current bookmark position.
+    // check-manager owns (status, fail count, deleted marker, notification +
+    // pin flags) on works we already track, and only refresh the parsed
+    // metadata and current bookmark position.
     const ids = works.map((work) => work.workId);
     const existing = await this.db.works.bulkGet(ids);
     const merged = works.map((incoming, index) => {
@@ -298,7 +303,6 @@ class ImportManager {
         checkFailCount: prior.checkFailCount,
         lastChecked: prior.lastChecked,
         deletedAt: prior.deletedAt,
-        orphanedAt: prior.orphanedAt,
         notified: prior.notified,
         pinnedToTop: prior.pinnedToTop,
         priorityScore: prior.priorityScore
@@ -318,97 +322,10 @@ class ImportManager {
   }
 }
 
-// Parsing runs in the service worker (and on HTML strings sent from the content
-// script), where there is no DOMParser — so the regex-based extractor is the
-// only path. There is intentionally no DOM-based parser.
-function parseBookmarkPage(html, { pageNumber = 1, originalPositionOffset = 0 } = {}) {
-  const blurbs = extractBookmarkBlurbHtml(html);
-  return {
-    works: blurbs.map((blurbHtml, index) => parseBookmarkBlurb(blurbHtml, {
-      originalPosition: originalPositionOffset + index + 1
-    })).filter(Boolean),
-    estimatedTotalPages: getEstimatedTotalPagesFromHtml(html, pageNumber)
-  };
-}
-
-function parseBookmarkBlurb(input, { originalPosition = 1 } = {}) {
-  return parseBookmarkHtml(String(input || ""), originalPosition);
-}
-
-function parseBookmarkHtml(html, originalPosition) {
-  const workMatch = html.match(/<a\b[^>]*href=["']\/works\/(\d+)[^"']*["'][^>]*>([\s\S]*?)<\/a>/i);
-  if (!workMatch) return null;
-
-  const requiredTagsSection = sectionHtml(html, /<ul\b[^>]*class=["'][^"']*required-tags[^"']*["'][^>]*>([\s\S]*?)<\/ul>/i);
-  const freeTagsSection = sectionHtml(html, /<ul\b[^>]*class=["'][^"']*tags commas[^"']*["'][^>]*>([\s\S]*?)<\/ul>/i);
-  const bookmarkMetaSection = sectionHtml(html, /<ul\b[^>]*class=["'][^"']*meta[^"']*["'][^>]*>([\s\S]*?)<\/ul>/i);
-  const allFreeTags = tagTexts(freeTagsSection);
-
-  return createWorkRecord({
-    workId: workMatch[1],
-    title: cleanText(stripTags(workMatch[2])),
-    authors: relAuthorTexts(html),
-    fandoms: tagTexts(sectionHtml(html, /<h5\b[^>]*class=["'][^"']*fandoms[^"']*["'][^>]*>([\s\S]*?)<\/h5>/i)),
-    rating: tagTexts(requiredTagsSection)[0] || "",
-    warnings: tagTexts(requiredTagsSection).slice(1, 2),
-    categories: tagTexts(requiredTagsSection).slice(2, 3),
-    relationships: allFreeTags.filter((tag) => tag.includes("/")),
-    characters: allFreeTags.filter((tag) => !tag.includes("/") && !tag.includes(" ")),
-    freeTags: allFreeTags.filter((tag) => tag.includes(" ") || (!tag.includes("/") && tag.includes("-"))),
-    wordCount: parseNumber(statValueFromHtml(html, "Words")),
-    chapters: statValueFromHtml(html, "Chapters"),
-    summary: cleanText(stripTags(sectionHtml(html, /<blockquote\b[^>]*class=["'][^"']*summary[^"']*["'][^>]*>([\s\S]*?)<\/blockquote>/i))),
-    bookmarkNotes: cleanText(stripTags(sectionHtml(html, /<blockquote\b[^>]*class=["'][^"']*notes[^"']*["'][^>]*>([\s\S]*?)<\/blockquote>/i))),
-    bookmarkTags: tagTexts(bookmarkMetaSection),
-    dateBookmarked: cleanText(stripTags(sectionHtml(html, /<p\b[^>]*class=["'][^"']*datetime[^"']*["'][^>]*>([\s\S]*?)<\/p>/i))),
-    workLastUpdated: statValueFromHtml(html, "Updated"),
-    originalPosition
-  });
-}
-
-function createWorkRecord(fields) {
-  const importedAt = Date.now();
-  return {
-    workId: fields.workId,
-    title: fields.title || "",
-    authors: fields.authors || [],
-    fandoms: fields.fandoms || [],
-    rating: fields.rating || "",
-    warnings: fields.warnings || [],
-    categories: fields.categories || [],
-    relationships: fields.relationships || [],
-    characters: fields.characters || [],
-    freeTags: fields.freeTags || [],
-    wordCount: fields.wordCount || 0,
-    chapters: fields.chapters || "",
-    summary: fields.summary || "",
-    bookmarkNotes: fields.bookmarkNotes || "",
-    bookmarkTags: fields.bookmarkTags || [],
-    dateBookmarked: fields.dateBookmarked || "",
-    workLastUpdated: fields.workLastUpdated || "",
-    originalPosition: fields.originalPosition,
-    status: STATUS.ACTIVE,
-    checkFailCount: 0,
-    lastChecked: null,
-    deletedAt: null,
-    orphanedAt: null,
-    importedAt,
-    pinnedToTop: false,
-    notified: false
-  };
-}
-
 function isLoggedInBookmarkPage(html) {
   const source = String(html || "");
   return /id=["']greeting["'][\s\S]*?(class=["'][^"']*(user|current)[^"']*["']|\/logout|Log Out|Log out)/i.test(source)
     || /id=["']user-menu["']/i.test(source);
-}
-
-function getEstimatedTotalPagesFromHtml(html, fallbackPage) {
-  const numbers = [...html.matchAll(/(?:pagination|page)[\s\S]{0,200}?>(\d+)</gi)]
-    .map((match) => parseInt(match[1], 10))
-    .filter(Number.isFinite);
-  return numbers.length ? Math.max(...numbers) : fallbackPage;
 }
 
 function buildProgress(currentPage, estimatedTotalPages) {
@@ -433,71 +350,14 @@ function randomDelay(min, max, random = Math.random) {
   return Math.floor(random() * (max - min + 1)) + min;
 }
 
-function statValueFromHtml(html, label) {
-  const pattern = new RegExp(`<dt[^>]*>\\s*${escapeRegExp(label)}:?\\s*<\\/dt>\\s*<dd[^>]*>([\\s\\S]*?)<\\/dd>`, "i");
-  return cleanText(stripTags(html.match(pattern)?.[1] || ""));
-}
-
-function extractBookmarkBlurbHtml(html) {
-  return [...html.matchAll(/<li\b[^>]*(?:bookmark|work)[^>]*\bblurb\b[^>]*>[\s\S]*?<\/li>/gi)]
-    .map((match) => match[0]);
-}
-
-function relAuthorTexts(html) {
-  return [...html.matchAll(/<a\b[^>]*rel=["']author["'][^>]*>([\s\S]*?)<\/a>/gi)]
-    .map((match) => cleanText(stripTags(match[1])))
-    .filter(Boolean);
-}
-
-function tagTexts(html) {
-  return [...String(html || "").matchAll(/<a\b[^>]*class=["'][^"']*tag[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi)]
-    .map((match) => cleanText(stripTags(match[1])))
-    .filter(Boolean);
-}
-
-function sectionHtml(html, pattern) {
-  return String(html || "").match(pattern)?.[1] || "";
-}
-
-function extractWorkId(href) {
-  return String(href || "").match(/\/works\/(\d+)/)?.[1] || "";
-}
-
-function parseNumber(value) {
-  return Number(String(value || "").replace(/[^\d]/g, "")) || 0;
-}
-
-function cleanText(value) {
-  return decodeHtml(String(value || "").replace(/\s+/g, " ").trim());
-}
-
-function stripTags(value) {
-  return String(value || "").replace(/<[^>]*>/g, " ");
-}
-
-function decodeHtml(value) {
-  const entities = {
-    amp: "&",
-    lt: "<",
-    gt: ">",
-    quot: '"',
-    "#039": "'",
-    apos: "'"
-  };
-  return String(value).replace(/&([^;]+);/g, (match, entity) => entities[entity] || match);
-}
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 globalThis.AO3LostAndFoundImport = {
   ImportManager,
   buildProgress,
   computeBackoff,
   isLoggedInBookmarkPage,
-  parseBookmarkBlurb,
-  parseBookmarkPage,
+  // Re-exported from the shared parser so existing callers/tests keep working.
+  parseBookmarkBlurb: Parser.parseBookmarkBlurb,
+  parseBookmarkPage: Parser.parseBookmarkPage,
   randomDelay
 };
 

@@ -8,7 +8,7 @@
  * Output:
  * - Maintains a persistent check queue in db.meta.
  * - Performs HEAD-only checks in bounded batches.
- * - Emits checks:confirmed when a work is newly confirmed deleted/orphaned.
+ * - Emits checks:confirmed when a work is newly confirmed deleted.
  * - Emits checks:badge-refresh when badge count should be re-queried.
  *
  * This module does not import other extension modules. background.js owns the
@@ -46,64 +46,72 @@ class CheckManager {
     this.consecutive429s = 0;
   }
 
-  async runBatch({ manual = false } = {}) {
+  async runBatch({ manual = false, batchSize } = {}) {
     if (this.running) {
       return { success: false, error: "A check batch is already running." };
     }
 
     this.running = true;
-    const batchSize = randomDelay(this.batchSizeRange[0], this.batchSizeRange[1], this.random);
+    const limit = Math.max(1, Number(batchSize)
+      || randomDelay(this.batchSizeRange[0], this.batchSizeRange[1], this.random));
     let processed = 0;
 
+    // Shared state for the two lanes. `pending` is the confirmation fast-lane
+    // (works that already looked deleted, re-checked ahead of the rotation so
+    // the 3-strike confirmation completes within a few runs instead of a few
+    // full passes). `seen` ensures a work is checked at most once per run, so
+    // strikes stay spaced by the run interval.
+    let pending = await this.getPending();
+    let queue = await this.getQueue();
+    if (queue.length === 0) {
+      queue = await this.rebuildQueue();
+    }
+    const seen = new Set();
+
     try {
-      let queue = await this.getQueue();
+      // Lane 1: confirmation fast-lane (snapshot so mutating `pending` is safe).
+      const fastLane = [...pending];
+      while (fastLane.length > 0 && processed < limit) {
+        const outcome = await this.processWorkId(fastLane, seen, () => ({ pending, queue }));
+        if (outcome.paused) {
+          return { success: false, paused: true, processed, error: "Paused after repeated AO3 rate-limit responses." };
+        }
+        if (outcome.processed) {
+          pending = outcome.pending;
+          processed += 1;
+          if (processed < limit) {
+            await this.delayFn(randomDelay(this.requestDelayRange[0], this.requestDelayRange[1], this.random));
+          }
+        }
+      }
+
+      // Lane 2: main rotation.
+      while (queue.length > 0 && processed < limit) {
+        if (seen.has(queue[0])) {
+          queue.shift();
+          continue;
+        }
+        const outcome = await this.processWorkId(queue, seen, () => ({ pending, queue }));
+        if (outcome.paused) {
+          return { success: false, paused: true, processed, error: "Paused after repeated AO3 rate-limit responses." };
+        }
+        if (outcome.processed) {
+          pending = outcome.pending;
+          processed += 1;
+          if (processed < limit) {
+            await this.delayFn(randomDelay(this.requestDelayRange[0], this.requestDelayRange[1], this.random));
+          }
+        }
+      }
+
       if (queue.length === 0) {
+        // Pass finished: rebuild the rotation for next time (capture it so the
+        // final persist below does not clobber it with the drained queue).
         queue = await this.rebuildQueue();
       }
 
-      while (queue.length > 0 && processed < batchSize) {
-        const workId = queue.shift();
-        const work = await this.db.works.get(workId);
-        if (!work) {
-          await this.setQueue(queue);
-          continue;
-        }
-
-        const result = await this.checkWork(work);
-        if (result.statusCode === 429) {
-          queue.unshift(workId);
-          await this.setQueue(queue);
-          const shouldPause = await this.handle429();
-          if (shouldPause) {
-            return { success: false, paused: true, processed, error: "Paused after repeated AO3 rate-limit responses." };
-          }
-          continue;
-        }
-
-        this.consecutive429s = 0;
-        const nextWork = applyStateTransition(work, result, this.now());
-        const confirmedStatusChanged = nextWork.confirmedStatusChanged;
-        delete nextWork.confirmedStatusChanged;
-        nextWork.priorityScore = getPriorityScore(nextWork, this.now());
-        await this.db.works.put(nextWork);
-
-        if (confirmedStatusChanged && (nextWork.status === STATUS.DELETED || nextWork.status === STATUS.ORPHANED)) {
-          await this.bus?.emit?.(EVENTS.CHECKS_CONFIRMED, { work: nextWork, previousStatus: work.status });
-        }
-
-        processed += 1;
-        await this.setQueue(queue);
-
-        if (queue.length > 0 && processed < batchSize) {
-          await this.delayFn(randomDelay(this.requestDelayRange[0], this.requestDelayRange[1], this.random));
-        }
-      }
-
-      if (queue.length === 0) {
-        await this.rebuildQueue();
-      }
-
       await this.setMeta(META.CHECK_LAST_RUN, this.now());
+      await this.persistQueues(pending, queue);
       await this.bus?.emit?.(EVENTS.CHECKS_BADGE_REFRESH, { manual, processed });
       return { success: true, processed };
     } catch (error) {
@@ -113,6 +121,50 @@ class CheckManager {
     } finally {
       this.running = false;
     }
+  }
+
+  // Checks the work at the front of `lane`, records the transition, and keeps
+  // the confirmation fast-lane in sync. Returns { processed, paused, pending }.
+  async processWorkId(lane, seen, getState) {
+    const { pending, queue } = getState();
+    const workId = lane.shift();
+
+    const work = await this.db.works.get(workId);
+    if (!work) {
+      const trimmed = pending.filter((id) => id !== workId);
+      await this.persistQueues(trimmed, queue);
+      return { processed: false, paused: false, pending: trimmed };
+    }
+
+    const result = await this.checkWork(work);
+    if (result.statusCode === 429) {
+      lane.unshift(workId);
+      await this.persistQueues(pending, queue);
+      const shouldPause = await this.handle429();
+      return { processed: false, paused: shouldPause, pending };
+    }
+
+    seen.add(workId);
+    this.consecutive429s = 0;
+
+    const nextWork = applyStateTransition(work, result, this.now());
+    const confirmedStatusChanged = nextWork.confirmedStatusChanged;
+    delete nextWork.confirmedStatusChanged;
+    nextWork.priorityScore = getPriorityScore(nextWork, this.now());
+    await this.db.works.put(nextWork);
+
+    // Add to the fast-lane while unconfirmed, drop once resolved either way.
+    let nextPending = pending.filter((id) => id !== workId);
+    if (nextWork.status === STATUS.UNCONFIRMED) {
+      nextPending.push(workId);
+    }
+
+    if (confirmedStatusChanged && nextWork.status === STATUS.DELETED) {
+      await this.bus?.emit?.(EVENTS.CHECKS_CONFIRMED, { work: nextWork, previousStatus: work.status });
+    }
+
+    await this.persistQueues(nextPending, queue);
+    return { processed: true, paused: false, pending: nextPending };
   }
 
   async checkWork(work) {
@@ -126,7 +178,7 @@ class CheckManager {
       redirect: "follow"
     });
 
-    return normalizeHeadResult(response, work);
+    return normalizeHeadResult(response);
   }
 
   async rebuildQueue() {
@@ -168,6 +220,15 @@ class CheckManager {
     await this.setMeta(META.CHECK_QUEUE, queue);
   }
 
+  async getPending() {
+    return (await this.getMeta(META.CHECK_PENDING)) || [];
+  }
+
+  async persistQueues(pending, queue) {
+    await this.setMeta(META.CHECK_PENDING, pending);
+    await this.setMeta(META.CHECK_QUEUE, queue);
+  }
+
   async getMeta(key) {
     const row = await this.db.meta.get(key);
     return row?.value ?? null;
@@ -178,28 +239,17 @@ class CheckManager {
   }
 }
 
-function normalizeHeadResult(response, work) {
+function normalizeHeadResult(response) {
   const statusCode = response?.status || 0;
 
   return {
     statusCode,
     deleted: statusCode === 404 || statusCode === 410,
+    // Restricted/locked works still exist; tracked only so a 401/403 is never
+    // mistaken for a deletion.
     restricted: statusCode === 401 || statusCode === 403,
-    orphaned: responseIndicatesOrphaned(response, work),
     ok: statusCode >= 200 && statusCode < 300
   };
-}
-
-function responseIndicatesOrphaned(response, work) {
-  const url = String(response?.url || "").toLowerCase();
-  if (url.includes("orphan_account")) return true;
-
-  const orphanHeader = response?.headers?.get?.("x-ao3-lost-found-author");
-  if (String(orphanHeader || "").toLowerCase() === "orphan_account") return true;
-
-  return Array.isArray(work?.authors)
-    && work.authors.length > 0
-    && work.authors.every((author) => String(author).toLowerCase() === "orphan_account");
 }
 
 function applyStateTransition(work, result, now = Date.now()) {
@@ -222,18 +272,16 @@ function applyStateTransition(work, result, now = Date.now()) {
     };
   }
 
-  if (result?.deleted || result?.orphaned) {
+  if (result?.deleted) {
     const nextFailCount = (Number(work.checkFailCount) || 0) + 1;
-    const candidateStatus = result.deleted ? STATUS.DELETED : STATUS.ORPHANED;
 
     if (nextFailCount >= 3) {
-      const wasConfirmed = work.status === candidateStatus;
+      const wasConfirmed = work.status === STATUS.DELETED;
       return {
         ...base,
-        status: candidateStatus,
+        status: STATUS.DELETED,
         checkFailCount: nextFailCount,
-        deletedAt: candidateStatus === STATUS.DELETED ? work.deletedAt || now : work.deletedAt ?? null,
-        orphanedAt: candidateStatus === STATUS.ORPHANED ? work.orphanedAt || now : work.orphanedAt ?? null,
+        deletedAt: work.deletedAt || now,
         pinnedToTop: true,
         confirmedStatusChanged: !wasConfirmed
       };
@@ -251,8 +299,7 @@ function applyStateTransition(work, result, now = Date.now()) {
       ...base,
       status: STATUS.ACTIVE,
       checkFailCount: 0,
-      deletedAt: null,
-      orphanedAt: null
+      deletedAt: null
     };
   }
 
@@ -299,10 +346,28 @@ function randomDelay(min, max, random = Math.random) {
   return Math.floor(random() * (max - min + 1)) + min;
 }
 
+// Per-run batch size so a full pass over `total` works finishes in ~a day:
+// daily budget = clamp(total, floor, ceiling), divided across the day's runs
+// (derived from the check interval), then clamped to a safe per-run range.
+function computeBatchSize(total, intervalMinutes, config = (Constants.CHECK || {})) {
+  const {
+    DAILY_FLOOR = 150,
+    DAILY_CEILING = 1500,
+    BATCH_MIN = 2,
+    BATCH_MAX = 32
+  } = config;
+
+  const interval = Number(intervalMinutes) > 0 ? Number(intervalMinutes) : 30;
+  const runsPerDay = Math.max(1, Math.round(1440 / interval));
+  const budget = Math.min(DAILY_CEILING, Math.max(DAILY_FLOOR, Number(total) || 0));
+  return Math.min(BATCH_MAX, Math.max(BATCH_MIN, Math.ceil(budget / runsPerDay)));
+}
+
 globalThis.AO3LostAndFoundCheck = {
   CheckManager,
   applyStateTransition,
   computeBackoff,
+  computeBatchSize,
   getPriorityScore,
   normalizeHeadResult,
   randomDelay

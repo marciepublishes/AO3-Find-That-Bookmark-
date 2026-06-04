@@ -23,15 +23,16 @@ AO3's live HTML.
 ## Checking and status
 
 - Background checks run on the schedule without user action.
-- A work that returns deleted/orphaned is only confirmed after repeated checks (no single-failure false alarms).
-- Confirmed deleted and orphaned works update the popup counts.
+- A work that returns deleted is only confirmed after repeated checks (no single-failure false alarms).
+- A restricted/locked work (401/403) is never mistaken for a deletion.
+- Confirmed deleted works update the popup count.
 
 ## Badge and notification
 
-- The toolbar icon shows a red badge with the count of deleted + orphaned works.
+- The toolbar icon shows a red badge with the count of deleted works.
 - Hovering the icon shows a tooltip describing how many works may be gone.
 - The badge clears when the count reaches zero.
-- A browser notification fires once on first confirmation of a deleted/orphaned work and does not repeat for the same work.
+- A browser notification fires once on first confirmation of a deleted work and does not repeat for the same work.
 - Clicking the notification opens your AO3 bookmarks page.
 
 ## Popup "fic has left the building" alert
@@ -44,10 +45,9 @@ AO3's live HTML.
 ## On-page injection (bookmarks page)
 
 - Deleted works appear pinned at the top of the bookmarks page with deleted styling.
-- Orphaned works appear with orphaned styling and the correct badge text.
-- The Wayback Machine link appears on deleted/orphaned blurbs and opens the correct archive search URL in a new tab.
+- The Wayback Machine link appears on deleted blurbs and opens the correct archive search URL in a new tab.
 - "Return to original position" moves a work and persists after reload.
-- The user sidebar shows "Deleted" and "Orphaned" entries with counts, placed beneath "Gifts".
+- The user sidebar shows a "Deleted" entry with a count, placed beneath "Gifts".
 - Clicking a sidebar entry filters the bookmarks page to just those works, with a heading like "N found deleted works in <user>'s bookmarks".
 
 ## Privacy

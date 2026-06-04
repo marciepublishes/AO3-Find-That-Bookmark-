@@ -38,35 +38,35 @@
     runtime.runtime.sendMessage({ type: C.MSG.ENSURE_IMPORT, username: me }).catch(() => {});
   }
 
-  // Capture the bookmark blurbs already on the page — no extra fetches. The
-  // background parses and merge-upserts them, keeping records current as the
-  // user browses their own bookmarks.
+  // Capture the bookmark blurbs already on the page — no extra fetches. We parse
+  // them here against the live DOM (more accurate and safer than shipping raw
+  // HTML to the worker) and send structured records; the background merge-upserts
+  // them, keeping records current as the user browses their own bookmarks.
   function snapshotVisibleBookmarks() {
     if (!runtime?.runtime?.sendMessage || !isOwnBookmarks()) return;
+
+    const parser = globalThis.AO3LostAndFoundParser;
+    if (!parser?.parseBlurbElement) return;
 
     const pageNumber = injection?.getPageNumber(location) || 1;
     const blurbEls = [...document.querySelectorAll("li.bookmark.blurb, li.work.blurb")]
       .filter((element) => !element.classList.contains("ao3-lost-found"));
     const pageSize = blurbEls.length || 20;
 
-    const blurbs = blurbEls.map((element, index) => ({
-      html: element.outerHTML,
-      position: (pageNumber - 1) * pageSize + index + 1
-    }));
-    if (blurbs.length === 0) return;
+    const records = blurbEls
+      .map((element, index) => parser.parseBlurbElement(element, {
+        originalPosition: (pageNumber - 1) * pageSize + index + 1
+      }))
+      .filter(Boolean);
+    if (records.length === 0) return;
 
     runtime.runtime
-      .sendMessage({ type: C.MSG.SNAPSHOT_BOOKMARKS, blurbs, username: getLoggedInUsername() })
+      .sendMessage({ type: C.MSG.SNAPSHOT_BOOKMARKS, records, username: getLoggedInUsername() })
       .catch(() => {});
   }
 
   function getRenderedWorkEntries(documentRoot = document) {
-    const blurbs = [...documentRoot.querySelectorAll("li.work.blurb[id^='work_'], li.bookmark.blurb[id^='work_'], .work.blurb[id^='work_']")];
-    return blurbs.map((element, index) => ({
-      element,
-      workId: element.id.replace(/^work_/, ""),
-      position: ((injection?.getPageNumber(location) || 1) - 1) * (blurbs.length || 20) + index + 1
-    })).filter((entry) => entry.workId);
+    return injection.getRenderedWorkEntries(documentRoot, location);
   }
 
   function getRenderedWorkIds(documentRoot = document) {
@@ -213,9 +213,7 @@
     if (works.length === 0) {
       const empty = document.createElement("li");
       empty.className = "ao3-lost-found-empty";
-      empty.textContent = status === C.STATUS.ORPHANED
-        ? "No orphaned works found yet."
-        : "No deleted works found yet.";
+      empty.textContent = "No deleted works found yet.";
       list.append(empty);
     }
 
@@ -247,13 +245,10 @@
       return;
     }
 
-    ensureDashboardSection({ deleted: 0, orphaned: 0 });
+    ensureDashboardSection({ deleted: 0 });
     attachDashboardLinkInterceptor();
     getStats().then((stats) => {
-      ensureDashboardSection({
-        deleted: stats.deleted,
-        orphaned: stats.orphaned
-      });
+      ensureDashboardSection({ deleted: stats.deleted });
       attachDashboardLinkInterceptor();
     });
 

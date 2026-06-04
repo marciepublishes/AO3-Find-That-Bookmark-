@@ -14,6 +14,7 @@ const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 const WORKER_SCRIPTS = [
   "modules/constants.js",
   "modules/db.js",
+  "modules/bookmark-parser.js",
   "modules/import-manager.js",
   "modules/check-manager.js",
   "background.js"
@@ -35,6 +36,7 @@ describe("service worker shared scope", () => {
     const combined = [
       "modules/constants.js",
       "modules/db.js",
+      "modules/bookmark-parser.js",
       "modules/import-manager.js",
       "modules/check-manager.js"
     ].map(read).join("\n;\n");
@@ -44,6 +46,7 @@ describe("service worker shared scope", () => {
     // typeof (not instanceof): classes from the vm realm aren't instances of
     // this realm's Function.
     expect(typeof context.AO3LostAndFoundDB.initDatabase).toBe("function");
+    expect(typeof context.AO3LostAndFoundParser.parseBookmarkBlurb).toBe("function");
     expect(typeof context.AO3LostAndFoundImport.ImportManager).toBe("function");
     expect(typeof context.AO3LostAndFoundCheck.CheckManager).toBe("function");
   });

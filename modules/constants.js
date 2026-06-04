@@ -46,9 +46,21 @@ const AO3LostAndFoundConstants = {
     IMPORT_COMPLETED_AT: "import:completedAt",
     LOST_ACKNOWLEDGED: "lost:acknowledged",
     CHECK_QUEUE: "check:queue",
+    CHECK_PENDING: "check:pending",
     CHECK_LAST_RUN: "check:lastRun",
     CHECK_PAUSED: "check:paused",
     SETTINGS: "settings"
+  },
+
+  // Adaptive check-budget tuning. The per-run batch size is derived so a full
+  // pass through N bookmarks finishes within ~a day (budget = clamp(N, floor,
+  // ceiling) checks/day), spread across the day's runs. Raising DAILY_CEILING
+  // detects faster for very large libraries at the cost of more AO3 traffic.
+  CHECK: {
+    DAILY_FLOOR: 150,
+    DAILY_CEILING: 1500,
+    BATCH_MIN: 2,
+    BATCH_MAX: 32
   },
 
   // work.status values.
@@ -56,7 +68,6 @@ const AO3LostAndFoundConstants = {
     ACTIVE: "active",
     UNCONFIRMED: "unconfirmed",
     DELETED: "deleted",
-    ORPHANED: "orphaned",
     RESTRICTED: "restricted"
   },
 

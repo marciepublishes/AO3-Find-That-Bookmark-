@@ -3,9 +3,7 @@ const C = globalThis.AO3LostAndFoundConstants;
 
 const elements = {
   deletedCount: document.querySelector("#deletedCount"),
-  orphanedCount: document.querySelector("#orphanedCount"),
   deletedNum: document.querySelector("#deletedNum"),
-  orphanedNum: document.querySelector("#orphanedNum"),
   hint: document.querySelector("#hint")
 };
 
@@ -16,18 +14,14 @@ function bookmarksFilterUrl(username, status) {
 function render(stats = {}) {
   const username = stats.username || "";
   const deleted = Number(stats.deleted) || 0;
-  const orphaned = Number(stats.orphaned) || 0;
   const total = Number(stats.total) || 0;
 
   elements.deletedNum.textContent = String(deleted);
-  elements.orphanedNum.textContent = String(orphaned);
 
   if (username) {
     elements.deletedCount.href = bookmarksFilterUrl(username, C.STATUS.DELETED);
-    elements.orphanedCount.href = bookmarksFilterUrl(username, C.STATUS.ORPHANED);
   } else {
     elements.deletedCount.removeAttribute("href");
-    elements.orphanedCount.removeAttribute("href");
   }
 
   const newLost = Number(stats.newLost) || 0;
@@ -106,20 +100,27 @@ infoClose?.addEventListener("click", () => setInfoOpen(false));
 
 // Help-panel footer: review, bug report (mailto), and feature request.
 const CONTACT_EMAIL = "marciepublishes@gmail.com"; // support address for bug reports and feature ideas
+const GITHUB_ISSUES_URL = "https://github.com/marciepublishes/AO3-Find-That-Bookmark-/issues"; // public issue tracker
 const STORE_REVIEW_URL = ""; // set after publishing (e.g. the Chrome Web Store reviews page)
 
 const reviewLink = document.querySelector("#reviewLink");
 const bugLink = document.querySelector("#bugLink");
+const bugNote = document.querySelector("#bugNote");
+const bugMail = document.querySelector("#bugMail");
+const bugGitHub = document.querySelector("#bugGitHub");
 const featureLink = document.querySelector("#featureLink");
 const featureNote = document.querySelector("#featureNote");
 const featureMail = document.querySelector("#featureMail");
+const featureGitHub = document.querySelector("#featureGitHub");
 
 function mailto(subject) {
   return `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent(subject)}`;
 }
 
-if (bugLink) bugLink.href = mailto("Bug report - AO3 Find That Bookmark!");
+if (bugMail) bugMail.href = mailto("Bug report - AO3 Find That Bookmark!");
 if (featureMail) featureMail.href = mailto("Feature idea - AO3 Find That Bookmark!");
+if (bugGitHub) bugGitHub.href = GITHUB_ISSUES_URL;
+if (featureGitHub) featureGitHub.href = GITHUB_ISSUES_URL;
 
 if (reviewLink) {
   if (STORE_REVIEW_URL) {
@@ -130,11 +131,22 @@ if (reviewLink) {
   }
 }
 
-featureLink?.addEventListener("click", () => {
-  const opening = featureNote.hasAttribute("hidden");
-  featureNote.toggleAttribute("hidden", !opening);
-  featureLink.setAttribute("aria-expanded", opening ? "true" : "false");
-});
+// Bug report and feature request each expand a note; only one is open at a time.
+function toggleNote(link, note, otherLink, otherNote) {
+  const opening = note.hasAttribute("hidden");
+  note.toggleAttribute("hidden", !opening);
+  link.setAttribute("aria-expanded", opening ? "true" : "false");
+  if (opening && otherNote && !otherNote.hasAttribute("hidden")) {
+    otherNote.setAttribute("hidden", "");
+    otherLink?.setAttribute("aria-expanded", "false");
+  }
+  if (opening) {
+    note.scrollIntoView({ behavior: "smooth", block: "end" });
+  }
+}
+
+bugLink?.addEventListener("click", () => toggleNote(bugLink, bugNote, featureLink, featureNote));
+featureLink?.addEventListener("click", () => toggleNote(featureLink, featureNote, bugLink, bugNote));
 
 // Live updates pushed from the background while the popup is open.
 runtime?.runtime?.onMessage?.addListener((message) => {

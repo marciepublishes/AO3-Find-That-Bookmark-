@@ -36,6 +36,11 @@
   box-sizing: border-box;
 }
 
+html {
+  margin: 0;
+  background: #A8BBA9;
+}
+
 body {
   margin: 0;
   width: 300px;
@@ -63,6 +68,8 @@ body {
 
 .info-toggle {
   flex: none;
+  position: relative;
+  top: -1px;
   display: grid;
   place-items: center;
   width: 18px;
@@ -204,6 +211,16 @@ body {
   opacity: 0.85;
 }
 
+.info-footer__share + .info-footer__share {
+  margin-left: 8px;
+}
+
+.info-footer__share--alt {
+  background: transparent;
+  color: #41653E;
+  border: 1px solid #41653E;
+}
+
 .info-panel__close {
   justify-self: center;
   margin-top: 8px;
@@ -259,15 +276,15 @@ body {
 }
 
 .counts {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  display: flex;
+  justify-content: center;
 }
 
 .count {
   display: grid;
   gap: 2px;
-  padding: 14px 8px;
+  padding: 14px 32px;
+  min-width: 120px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: #41653E;
@@ -301,10 +318,6 @@ body {
 }
 
 .count--deleted {
-  border-top: 3px solid #587156;
-}
-
-.count--orphaned {
   border-top: 3px solid #587156;
 }
 
