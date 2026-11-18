@@ -282,6 +282,104 @@ function formatFilteredHeading({ total, pageNumber = 1, pageSize = 20, username 
   return `${start} - ${end} of ${count} ${label}${userText}`;
 }
 
+// The logged-in user, read from AO3's top header ("Hi, NAME!" menu), which is
+// on every page. Bookmark authors live in #main, so any /users/ link in the
+// header belongs to the logged-in account. "login"/"logout" are not names.
+function getLoggedInUsername(documentRef = globalThis.document) {
+  const links = [
+    ...documentRef.querySelectorAll(
+      "#header a[href^='/users/'], #greeting a[href^='/users/'], #user-navigation a[href^='/users/'], #user-menu a[href^='/users/']"
+    )
+  ];
+  for (const link of links) {
+    const match = link.getAttribute("href")?.match(/^\/users\/([^/?#]+)/);
+    const name = match && decodeURIComponent(match[1]);
+    if (name && name !== "logout" && name !== "login") {
+      return name;
+    }
+  }
+  return "";
+}
+
+// True on the logged-in user's own /users/<name>/... pages only. The Deleted
+// sidebar entry and view show *your* records, so they never appear on someone
+// else's profile.
+function isOwnUserPage(documentRef = globalThis.document, locationRef = globalThis.location) {
+  const owner = getUsernameFromPath(locationRef);
+  const me = getLoggedInUsername(documentRef);
+  return Boolean(owner && me && owner.toLowerCase() === me.toLowerCase());
+}
+
+// AO3-style pager for the Deleted view (AO3's own pagination is removed there
+// because it pages the real bookmarks, not ours). Null when one page is enough.
+function buildPager(documentRef, { total, pageNumber = 1, pageSize = 20, locationRef = globalThis.location } = {}) {
+  const size = Math.max(1, Number(pageSize) || 20);
+  const pages = Math.ceil((Number(total) || 0) / size);
+  if (pages <= 1) return null;
+
+  const current = Math.min(Math.max(1, Number(pageNumber) || 1), pages);
+  const base = buildLostFoundFilterUrl(STATUS.DELETED, locationRef);
+  const href = (page) => (page === 1 ? base : `${base}&page=${page}`);
+
+  const pager = documentRef.createElement("ol");
+  pager.className = "pagination actions ao3-lost-found-pager";
+  pager.setAttribute("role", "navigation");
+  pager.setAttribute("aria-label", "Deleted works pages");
+
+  const addItem = (className, build) => {
+    const li = documentRef.createElement("li");
+    if (className) li.className = className;
+    li.append(build());
+    pager.append(li);
+  };
+  const link = (page, text, rel) => () => {
+    const a = documentRef.createElement("a");
+    a.href = href(page);
+    a.textContent = text;
+    if (rel) a.rel = rel;
+    return a;
+  };
+  const span = (text, className) => () => {
+    const s = documentRef.createElement("span");
+    s.className = className;
+    s.textContent = text;
+    return s;
+  };
+
+  addItem("previous", current > 1 ? link(current - 1, "← Previous", "prev") : span("← Previous", "disabled"));
+
+  // Every page when there are few; otherwise first, last, and a window
+  // around the current page, with gaps between.
+  const shown = new Set([1, pages]);
+  for (let page = current - 2; page <= current + 2; page += 1) {
+    if (page >= 1 && page <= pages) shown.add(page);
+  }
+  if (pages <= 9) for (let page = 1; page <= pages; page += 1) shown.add(page);
+
+  let previous = 0;
+  [...shown].sort((a, b) => a - b).forEach((page) => {
+    if (page - previous > 1) addItem("gap", span("…", "gap"));
+    addItem("", page === current ? span(String(page), "current") : link(page, String(page)));
+    previous = page;
+  });
+
+  addItem("next", current < pages ? link(current + 1, "Next →", "next") : span("Next →", "disabled"));
+  return pager;
+}
+
+// Back/forward between the Deleted view and the normal list. The Deleted view
+// replaces AO3's list in place, so going back to the normal URL needs a real
+// reload to get AO3's own list back. Returns what it did, for tests.
+async function handleFilterPopState({ locationRef = globalThis.location, renderFiltered, reload }) {
+  const filterStatus = getLostFoundFilter(locationRef);
+  if (filterStatus) {
+    await renderFiltered(filterStatus);
+    return "rendered";
+  }
+  reload();
+  return "reloaded";
+}
+
 function getUsernameFromPath(locationRef = globalThis.location) {
   const match = String(locationRef.pathname || "").match(/^\/users\/([^/]+)/);
   return match ? decodeURIComponent(match[1]) : "";
@@ -409,7 +507,11 @@ globalThis.AO3LostAndFoundInjection = {
   getPageNumber,
   getPageSize,
   getRenderedWorkEntries,
+  getLoggedInUsername,
   getUsernameFromPath,
+  buildPager,
+  handleFilterPopState,
+  isOwnUserPage,
   workIdFromBlurb,
   injectDashboardSection,
   injectStyles,

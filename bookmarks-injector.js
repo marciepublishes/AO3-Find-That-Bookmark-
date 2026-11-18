@@ -4,30 +4,16 @@
   const C = globalThis.AO3LostAndFoundConstants;
 
   function getLoggedInUsername(documentRoot = document) {
-    // The logged-in user's links live in the top header (#header) — the "Hi,
-    // USERNAME!" dropdown and its menu — on every AO3 page, not just the
-    // dashboard. Bookmark authors live in #main, so any /users/ link inside
-    // #header belongs to the logged-in account. Older selectors are kept as
-    // fallbacks. "logout"/"login" are excluded so we don't read /users/logout.
-    const links = [
-      ...documentRoot.querySelectorAll(
-        "#header a[href^='/users/'], #greeting a[href^='/users/'], #user-navigation a[href^='/users/'], #user-menu a[href^='/users/']"
-      )
-    ];
-    for (const link of links) {
-      const match = link.getAttribute("href")?.match(/^\/users\/([^/?#]+)/);
-      const name = match && decodeURIComponent(match[1]);
-      if (name && name !== "logout" && name !== "login") {
-        return name;
-      }
-    }
-    return "";
+    return injection.getLoggedInUsername(documentRoot);
+  }
+
+  // Any of the logged-in user's own /users/<name>/... pages.
+  function isOwnUserPage() {
+    return injection.isOwnUserPage(document, location);
   }
 
   function isOwnBookmarks() {
-    const owner = injection.getUsernameFromPath(location);
-    const me = getLoggedInUsername();
-    return Boolean(owner && me && owner.toLowerCase() === me.toLowerCase());
+    return isOwnUserPage();
   }
 
   function maybeStartAutoImport() {
@@ -230,21 +216,35 @@
     });
     injection.enableBookmarksReturnLink(document, location);
 
+    // AO3's pagination pages the real bookmarks, not this view: swap in ours
+    // (this also clears our own pager from a previous render).
     document.querySelectorAll(".pagination").forEach((element) => element.remove());
+    const pager = injection.buildPager(document, {
+      total: result.total || 0,
+      pageNumber: result.pageNumber || pageNumber,
+      pageSize: result.pageSize || pageSize,
+      locationRef: location
+    });
+    if (pager) list.after(pager);
 
     // Opening this deleted-works view IS the acknowledgement: clear the "new"
     // alert and the toolbar badge now that the user is actually looking at them.
     runtime?.runtime?.sendMessage?.({ type: C.MSG.ACKNOWLEDGE_LOST }).catch(() => {});
   }
 
-  window.addEventListener("popstate", async () => {
-    const filterStatus = injection.getLostFoundFilter(location);
-    const list = injection.getBookmarksList(document);
-    if (!list) return;
+  async function handlePopState({ reload = () => location.reload() } = {}) {
+    if (!injection.getBookmarksList(document)) return "no-list";
+    return injection.handleFilterPopState({
+      locationRef: location,
+      reload,
+      renderFiltered: async (status) => renderFilteredLostWorks(
+        injection.getBookmarksList(document), status, await getSettings()
+      )
+    });
+  }
 
-    if (filterStatus) {
-      await renderFilteredLostWorks(list, filterStatus, await getSettings());
-    }
+  window.addEventListener("popstate", () => {
+    handlePopState().catch((error) => console.warn("AO3 Lost and Found could not restore the page.", error));
   });
 
   async function init() {
@@ -252,6 +252,10 @@
       console.warn("AO3 Lost and Found injection helpers are unavailable.");
       return;
     }
+
+    // The sidebar entry, the Deleted view, and capture all concern the
+    // logged-in user's own records: stay out of other users' pages entirely.
+    if (!isOwnUserPage()) return;
 
     ensureDashboardSection({ deleted: 0 });
     attachDashboardLinkInterceptor();
@@ -284,11 +288,15 @@
     // reconstructed only in the explicit Lost and Found filtered view.
   }
 
-  init().catch((error) => {
+  // Settles once the first render pass is done (lets tests wait for it).
+  const ready = init().catch((error) => {
     console.warn("AO3 Lost and Found injector failed to initialize.", error);
   });
 
   globalThis.ao3LostAndFoundInjector = {
+    ready,
+    handlePopState,
+    isOwnUserPage,
     getLoggedInUsername,
     isOwnBookmarks,
     maybeStartAutoImport,
