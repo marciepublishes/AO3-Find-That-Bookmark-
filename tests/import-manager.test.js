@@ -285,7 +285,7 @@ describe("ImportManager.findMissingOnPage", () => {
     };
   }
 
-  function manager({ html, seed = [] } = {}) {
+  function manager({ html, seed = [], verifyDeleted } = {}) {
     const works = worksDb(seed);
     const emit = jest.fn();
     const instance = new ImportManager({
@@ -293,10 +293,17 @@ describe("ImportManager.findMissingOnPage", () => {
       db: { works },
       delayFn: async () => {},
       now: () => 1000,
-      fetchFn: async () => ({ ok: true, status: 200, text: async () => html })
+      fetchFn: async () => ({ ok: true, status: 200, text: async () => html }),
+      verifyDeleted
     });
     return { instance, works, emit };
   }
+
+  const tier2Seed = () => [
+    { workId: "900", originalPosition: 1, status: "active", title: "Ghost Fic" }, // no bookmarkId
+    { workId: "33761359", originalPosition: 2, status: "active" },
+    { workId: "73617951", originalPosition: 3, status: "active" }
+  ];
 
   const page = fixture("bookmark-listing-page.html"); // deleted bookmark 2907130126 + works 33761359, 73617951
 
@@ -323,21 +330,38 @@ describe("ImportManager.findMissingOnPage", () => {
     expect(emit).toHaveBeenCalledWith("checks:confirmed", expect.objectContaining({ work: expect.objectContaining({ workId: "900" }) }));
   });
 
-  test("Tier 2: resolves by neighbour anchors when no bookmarkId was stored", async () => {
-    const { instance, works } = manager({
-      html: page,
-      seed: [
-        { workId: "900", originalPosition: 1, status: "active", title: "Ghost Fic" }, // no bookmarkId
-        { workId: "33761359", originalPosition: 2, status: "active" },
-        { workId: "73617951", originalPosition: 3, status: "active" }
-      ]
-    });
+  test("Tier 2: resolves by neighbour anchors once a live check agrees", async () => {
+    const verifyDeleted = jest.fn(async () => true);
+    const { instance, works } = manager({ html: page, seed: tier2Seed(), verifyDeleted });
 
     const result = await instance.findMissingOnPage("marcie", 1);
 
+    expect(verifyDeleted).toHaveBeenCalledWith(expect.objectContaining({ workId: "900" }));
     expect(result.confirmed).toHaveLength(1);
     expect(result.confirmed[0]).toMatchObject({ workId: "900", tier: 2 });
     expect((await works.get("900")).status).toBe("deleted");
+  });
+
+  test("Tier 2: a candidate that still loads is reported, not confirmed", async () => {
+    const { instance, works, emit } = manager({ html: page, seed: tier2Seed(), verifyDeleted: async () => false });
+
+    const result = await instance.findMissingOnPage("marcie", 1);
+
+    expect(result.confirmed).toEqual([]);
+    expect(result.ambiguous).toHaveLength(1);
+    expect(result.ambiguous[0].candidates).toEqual([expect.objectContaining({ workId: "900" })]);
+    expect((await works.get("900")).status).toBe("active");
+    expect(emit).not.toHaveBeenCalledWith("checks:confirmed", expect.anything());
+  });
+
+  test("Tier 2: never auto-confirms without a verifier", async () => {
+    const { instance, works } = manager({ html: page, seed: tier2Seed() });
+
+    const result = await instance.findMissingOnPage("marcie", 1);
+
+    expect(result.confirmed).toEqual([]);
+    expect(result.ambiguous).toHaveLength(1);
+    expect((await works.get("900")).status).toBe("active");
   });
 
   test("reports logged-out without touching the database", async () => {

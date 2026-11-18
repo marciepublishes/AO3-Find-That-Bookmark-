@@ -346,29 +346,6 @@ describe("CheckManager helpers", () => {
     expect(db._meta.get("check:pending").sort()).toEqual(["new", "striking"]);
   });
 
-  test("the first clean run after an outage re-verifies deletions made since it began", async () => {
-    const db = makeDb([
-      { workId: "1", status: "active", checkFailCount: 0, dateBookmarked: "2026-05-01", authors: [] },
-      { workId: "old", status: "deleted", checkFailCount: 3, deletedAt: 100, authors: [] },
-      { workId: "during", status: "deleted", checkFailCount: 3, deletedAt: 900, authors: [] }
-    ]);
-    db._meta.set("check:outageStartedAt", 500);
-    const manager = new CheckManager({
-      bus: { emit: async () => {} },
-      db,
-      now: () => 2000,
-      delayFn: async () => {},
-      backoffDelayFn: async () => {},
-      fetchFn: async (url) => ({ status: url.includes("/works/1") ? 200 : 404, url })
-    });
-
-    await manager.runBatch({ batchSize: 1 });
-
-    expect(db._meta.get("check:outageStartedAt")).toBeNull();
-    expect((await db.works.get("old")).status).toBe("deleted");
-    expect((await db.works.get("during")).status).toBe("unconfirmed");
-  });
-
   test("checkWork uses HEAD requests only", async () => {
     const calls = [];
     const manager = new CheckManager({
@@ -383,5 +360,180 @@ describe("CheckManager helpers", () => {
     await manager.checkWork(baseWork);
     expect(calls).toHaveLength(1);
     expect(calls[0].options.method).toBe("HEAD");
+  });
+});
+
+describe("v1.5.0 phase 1: re-checks never reset or resurrect deletions", () => {
+  const quietManager = (db, fetchFn, extra = {}) => new CheckManager({
+    bus: { emit: async () => {} },
+    db,
+    delayFn: async () => {},
+    backoffDelayFn: async () => {},
+    fetchFn,
+    ...extra
+  });
+
+  test("queueRecheck keeps deleted works deleted and only queues them", async () => {
+    const db = makeDb([
+      { workId: "old", status: "deleted", checkFailCount: 3, deletedAt: 5, notified: true, authors: [] },
+      { workId: "live", status: "active", checkFailCount: 0, authors: [] }
+    ]);
+    const manager = quietManager(db, async () => ({ status: 200 }));
+
+    const result = await manager.queueRecheck();
+
+    expect(result).toEqual({ success: true, reverifying: 1 });
+    expect(await db.works.get("old")).toMatchObject({ status: "deleted", checkFailCount: 3, deletedAt: 5, notified: true });
+    expect(db._meta.get("check:pending")).toEqual(["old"]);
+  });
+
+  test("a queued real deletion stays deleted without a new confirmation event", async () => {
+    const db = makeDb([
+      { workId: "old", status: "deleted", checkFailCount: 3, deletedAt: 5, notified: true, dateBookmarked: "2026-05-01", authors: [] }
+    ]);
+    const events = [];
+    const manager = new CheckManager({
+      bus: { emit: async (type) => { events.push(type); } },
+      db,
+      delayFn: async () => {},
+      backoffDelayFn: async () => {},
+      fetchFn: async (url) => ({ status: url.includes("/works/old") ? 404 : 200, url })
+    });
+
+    await manager.queueRecheck();
+    await manager.runBatch({ batchSize: 5 });
+
+    expect((await db.works.get("old")).status).toBe("deleted");
+    expect(events).not.toContain("checks:confirmed");
+    expect(db._meta.get("check:pending")).toEqual([]);
+  });
+
+  test("a queued false alarm that loads again goes back to active", async () => {
+    const db = makeDb([
+      { workId: "fine", status: "deleted", checkFailCount: 3, deletedAt: 5, notified: true, dateBookmarked: "2026-05-01", authors: [] }
+    ]);
+    const manager = quietManager(db, async (url) => ({ status: 200, url }));
+
+    await manager.queueRecheck();
+    await manager.runBatch({ batchSize: 5 });
+
+    expect(await db.works.get("fine")).toMatchObject({ status: "active", deletedAt: null });
+  });
+
+  test("queueRecheck with since only queues deletions from then on", async () => {
+    const db = makeDb([
+      { workId: "before", status: "deleted", deletedAt: 500, authors: [] },
+      { workId: "after", status: "deleted", deletedAt: 1500, authors: [] }
+    ]);
+    const manager = quietManager(db, async () => ({ status: 200 }));
+
+    expect(await manager.queueRecheck({ since: 1000 })).toEqual({ success: true, reverifying: 1 });
+    expect(db._meta.get("check:pending")).toEqual(["after"]);
+  });
+
+  test("the end of a later outage never turns an Oct 29-reset work back to deleted", async () => {
+    const oct29 = Date.parse("2026-10-29T12:00:00Z");
+    const dec1 = Date.parse("2026-12-01T00:00:00Z");
+    const db = makeDb([
+      { workId: "1", status: "active", checkFailCount: 0, dateBookmarked: "2026-05-01", authors: [] },
+      // Reset by the Oct 29 repair: unconfirmed, no strikes, old deletedAt kept.
+      { workId: "7", status: "unconfirmed", checkFailCount: 0, firstFailedAt: null, deletedAt: oct29, authors: [] }
+    ]);
+    db._meta.set("check:outageStartedAt", dec1);
+    db._meta.set("check:queue", ["1"]);
+    db._meta.set("check:pending", []);
+    const manager = quietManager(db, async (url) => ({ status: 200, url }), { now: () => dec1 + 1000 });
+
+    const result = await manager.runBatch({ batchSize: 1 });
+
+    expect(result.success).toBe(true);
+    expect((await db.works.get("7")).status).toBe("unconfirmed");
+  });
+
+  test("after an outage, deletions from during it are queued, not reset", async () => {
+    const db = makeDb([
+      { workId: "1", status: "active", checkFailCount: 0, dateBookmarked: "2026-05-01", authors: [] },
+      { workId: "old", status: "deleted", checkFailCount: 3, deletedAt: 100, authors: [] },
+      { workId: "during", status: "deleted", checkFailCount: 3, deletedAt: 900, authors: [] }
+    ]);
+    db._meta.set("check:outageStartedAt", 500);
+    db._meta.set("check:queue", ["1"]);
+    const manager = quietManager(db, async (url) => ({ status: 200, url }), { now: () => 2000 });
+
+    await manager.runBatch({ batchSize: 1 });
+
+    expect(db._meta.get("check:outageStartedAt")).toBeNull();
+    expect((await db.works.get("old")).status).toBe("deleted");
+    expect((await db.works.get("during")).status).toBe("deleted");
+    expect(db._meta.get("check:pending")).toEqual(["during"]);
+  });
+
+  test("after an outage, strikes gathered during it are cleared", async () => {
+    const db = makeDb([
+      { workId: "1", status: "active", checkFailCount: 0, dateBookmarked: "2026-05-01", authors: [] },
+      { workId: "during", status: "unconfirmed", checkFailCount: 2, firstFailedAt: 900, authors: [] },
+      { workId: "before", status: "unconfirmed", checkFailCount: 2, firstFailedAt: 100, authors: [] }
+    ]);
+    db._meta.set("check:outageStartedAt", 500);
+    db._meta.set("check:queue", ["1"]);
+    const manager = quietManager(db, async (url) => ({ status: 200, url }), { now: () => 2000 });
+
+    await manager.runBatch({ batchSize: 1 });
+
+    expect(await db.works.get("during")).toMatchObject({ status: "unconfirmed", checkFailCount: 0, firstFailedAt: null });
+    expect(await db.works.get("before")).toMatchObject({ status: "unconfirmed", checkFailCount: 2, firstFailedAt: 100 });
+    expect(db._meta.get("check:pending")).toContain("during");
+  });
+});
+
+describe("v1.5.0 phase 1: live verification and Cloudflare challenges", () => {
+  const challenge = (status = 403) => ({
+    status,
+    headers: { get: (name) => (String(name).toLowerCase() === "cf-mitigated" ? "challenge" : null) }
+  });
+
+  test("a Cloudflare challenge is transient, not restricted", () => {
+    expect(normalizeHeadResult(challenge())).toMatchObject({ transient: true, restricted: false, deleted: false, ok: false });
+  });
+
+  test("a plain 403 without the challenge header is still restricted", () => {
+    expect(normalizeHeadResult({ status: 403, headers: { get: () => null } })).toMatchObject({ restricted: true, transient: false });
+  });
+
+  test("a challenged health check reports AO3 as unhealthy", async () => {
+    const manager = new CheckManager({
+      bus: { emit: async () => {} },
+      db: makeDb([]),
+      delayFn: async () => {},
+      fetchFn: async () => challenge(200)
+    });
+    expect(await manager.isArchiveHealthy("x")).toBe(false);
+  });
+
+  test("a Cloudflare challenge does not relabel a work as restricted", async () => {
+    const db = makeDb([{ workId: "1", status: "unconfirmed", checkFailCount: 2, firstFailedAt: 0, dateBookmarked: "2026-05-01", authors: [] }]);
+    const manager = new CheckManager({
+      bus: { emit: async () => {} },
+      db,
+      delayFn: async () => {},
+      backoffDelayFn: async () => {},
+      fetchFn: async () => challenge()
+    });
+
+    await manager.runBatch({ batchSize: 5 });
+
+    expect(await db.works.get("1")).toMatchObject({ status: "unconfirmed", checkFailCount: 2 });
+  });
+
+  test("verifyDeleted needs a 404 and a healthy archive", async () => {
+    const work = { workId: "9" };
+    const make = (fetchFn) => new CheckManager({ bus: null, db: makeDb([]), delayFn: async () => {}, fetchFn });
+
+    expect(await make(async (url) => ({ status: url.includes("/works/9") ? 404 : 200, url })).verifyDeleted(work)).toBe(true);
+    expect(await make(async (url) => ({ status: 200, url })).verifyDeleted(work)).toBe(false);
+    expect(await make(async (url) => (url.includes("/works/9")
+      ? { status: 404, url }
+      : { status: 200, url, text: async () => MAINTENANCE_HTML })).verifyDeleted(work)).toBe(false);
+    expect(await make(async () => { throw new TypeError("offline"); }).verifyDeleted(work)).toBe(false);
   });
 });

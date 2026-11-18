@@ -125,11 +125,14 @@ class CheckManager {
       await this.persistQueues(pending, queue);
 
       // First clean run after an outage: anything confirmed deleted since it
-      // began gets re-verified, in case a strike slipped past the guards.
+      // began gets one more look, in case a strike slipped past the guards,
+      // and strikes collected during it are discarded. Statuses are never
+      // reset or restored here, so this can't turn any work into a deletion.
       const outageStartedAt = await this.getMeta(META.OUTAGE_STARTED);
       if (outageStartedAt) {
         await this.setMeta(META.OUTAGE_STARTED, null);
-        await this.requeueLost({ since: outageStartedAt });
+        await this.queueDeletedForRecheck({ since: outageStartedAt });
+        await this.clearStrikesSince(outageStartedAt);
       }
 
       await this.bus?.emit?.(EVENTS.CHECKS_BADGE_REFRESH, { manual, processed });
@@ -265,7 +268,8 @@ class CheckManager {
     try {
       const response = await this.fetchFn(url, { method: "GET", credentials: "include", redirect: "follow" });
       statusCode = response?.status || 0;
-      maintenance = isMaintenancePage(await readPageStart(response));
+      // A Cloudflare bot challenge is not AO3 serving pages, whatever its code.
+      maintenance = isCloudflareChallenge(response) || isMaintenancePage(await readPageStart(response));
     } catch (error) {
       statusCode = 0;
     }
@@ -282,12 +286,70 @@ class CheckManager {
     return healthy;
   }
 
+  // One live check of a single work, for callers outside the batch (the
+  // "Find it now" tool). True only when the work answers 404/410 AND AO3 is
+  // demonstrably serving pages; any doubt answers false.
+  async verifyDeleted(work) {
+    try {
+      const result = await this.checkWork(work);
+      if (!result.deleted) return false;
+      return await this.isArchiveHealthy(work.workId, { fresh: true });
+    } catch (error) {
+      return false;
+    }
+  }
+
   async rememberCanary(workId) {
     if (this.canaryId === workId) return;
     this.canaryId = workId;
     await this.setMeta(META.CHECK_CANARY, workId);
   }
 
+  // The user-facing "re-check deleted works": queue every deleted work (from
+  // `since` on, if given) for one more look, WITHOUT touching its status,
+  // strikes or deletedAt. A false alarm that loads goes back to active; a real
+  // deletion just stays deleted, so it never re-alerts or leaves the list.
+  async queueRecheck({ since = null } = {}) {
+    if (this.running) {
+      return { success: false, error: "A check batch is running; try again in a moment." };
+    }
+
+    const reverifying = await this.queueDeletedForRecheck({ since });
+    await this.bus?.emit?.(EVENTS.CHECKS_BADGE_REFRESH, { manual: true, processed: 0 });
+    return { success: true, reverifying };
+  }
+
+  async queueDeletedForRecheck({ since = null } = {}) {
+    const ids = (await this.db.works.toArray())
+      .filter((work) => work.status === STATUS.DELETED
+        && (since == null || Number(work.deletedAt || 0) >= since))
+      .map((work) => work.workId);
+
+    if (ids.length > 0) {
+      const pending = new Set(await this.getPending());
+      ids.forEach((id) => pending.add(id));
+      await this.setMeta(META.CHECK_PENDING, [...pending]);
+    }
+    return ids.length;
+  }
+
+  // Strikes first recorded at or after `since` are suspect (they came from an
+  // outage window): zero them so the work starts confirmation over.
+  async clearStrikesSince(since) {
+    const cleared = (await this.db.works.toArray())
+      .filter((work) => work.status === STATUS.UNCONFIRMED
+        && Number.isFinite(work.firstFailedAt) && work.firstFailedAt >= since)
+      .map((work) => ({ ...work, checkFailCount: 0, firstFailedAt: null }));
+
+    if (cleared.length > 0) {
+      await this.db.works.bulkPut(cleared);
+      const pending = new Set(await this.getPending());
+      cleared.forEach((work) => pending.add(work.workId));
+      await this.setMeta(META.CHECK_PENDING, [...pending]);
+    }
+  }
+
+  // ONE-TIME Oct 29 2026 repair only (background.js repairOutageOnceHealthy).
   // Send deleted/unconfirmed works back through confirmation from zero strikes,
   // to undo false positives from an AO3 outage: works that load return to
   // active, real deletions are re-confirmed (already-notified works keep
@@ -447,8 +509,22 @@ function checkConfig() {
   };
 }
 
+// Cloudflare marks its challenge / block responses with a `cf-mitigated`
+// header. They usually arrive as 403, which would otherwise read as a locked
+// work, but they say nothing about the work itself.
+function isCloudflareChallenge(response) {
+  try {
+    return Boolean(response?.headers?.get?.("cf-mitigated"));
+  } catch (error) {
+    return false;
+  }
+}
+
 function normalizeHeadResult(response) {
   const statusCode = response?.status || 0;
+  if (isCloudflareChallenge(response)) {
+    return { statusCode, deleted: false, restricted: false, ok: false, transient: true };
+  }
   const deleted = statusCode === 404 || statusCode === 410;
   // Restricted/locked works still exist; tracked only so a 401/403 is never
   // mistaken for a deletion.

@@ -34,7 +34,11 @@ class ImportManager {
     random = Math.random,
     now = () => Date.now(),
     pageDelayRange = [4000, 8000],
-    backoffDelayFn = null
+    backoffDelayFn = null,
+    // async (work) => boolean. A live "is this work really gone?" check used
+    // before a positional (tier 2) match is confirmed. Without one, positional
+    // matches are only ever reported, never confirmed.
+    verifyDeleted = null
   }) {
     this.bus = bus;
     this.db = db;
@@ -44,6 +48,7 @@ class ImportManager {
     this.now = now;
     this.pageDelayRange = pageDelayRange;
     this.backoffDelayFn = backoffDelayFn || delayFn;
+    this.verifyDeleted = verifyDeleted;
     this.running = false;
     this.pauseRequested = false;
     this.consecutive429s = 0;
@@ -261,7 +266,10 @@ class ImportManager {
     const confirmed = [];
     const ambiguous = [];
     for (const match of matches) {
-      if (match.work) {
+      // Tier 1 (bookmark id) is authoritative. Tier 2 rests on stored
+      // positions, which go stale, so it must also fail a live check.
+      const trusted = match.work && (match.tier === 1 || (await this.isVerifiedDeleted(match.work)));
+      if (trusted) {
         const next = await this.confirmDeletedFromListing(match.work);
         confirmed.push(summariseWork(next, match.tier));
       } else {
@@ -273,6 +281,15 @@ class ImportManager {
     }
 
     return { success: true, page, deletedFound: deleted.length, confirmed, ambiguous };
+  }
+
+  async isVerifiedDeleted(work) {
+    if (typeof this.verifyDeleted !== "function") return false;
+    try {
+      return Boolean(await this.verifyDeleted(work));
+    } catch (error) {
+      return false;
+    }
   }
 
   // Confirm a work deleted because the listing said so outright. Mirrors the

@@ -36,7 +36,10 @@ class EventBus {
 const eventBus = new EventBus();
 const importManager = new globalThis.AO3LostAndFoundImport.ImportManager({
   bus: eventBus,
-  db
+  db,
+  // "Find it now" positional matches must fail a live check before they are
+  // confirmed. checkManager is declared just below; this only runs later.
+  verifyDeleted: (work) => checkManager.verifyDeleted(work)
 });
 const checkManager = new globalThis.AO3LostAndFoundCheck.CheckManager({
   bus: eventBus,
@@ -370,7 +373,8 @@ const messageHandlers = {
   [C.MSG.ACKNOWLEDGE_LOST]: async () => acknowledgeLostWorks(),
   [C.MSG.GET_SETTINGS]: async () => getSettings(),
   [C.MSG.RECHECK_LOST]: async () => {
-    const result = await checkManager.reverifyLost();
+    // Queue-only: deleted works stay deleted (no re-alerts) unless they load.
+    const result = await checkManager.queueRecheck();
     if (result.success) await updateBadgeCount();
     return result;
   },

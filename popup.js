@@ -266,7 +266,7 @@ function renderFinderResult(res) {
     parts.push(`<ul class="finder__list">${res.confirmed.map((w) => `<li>${workLink(w)}</li>`).join("")}</ul>`);
   }
   if (res.ambiguous && res.ambiguous.length) {
-    parts.push(`<p class="finder__ambiguous">A bookmark on this page is gone, but I couldn't be sure which. Best guesses:</p>`);
+    parts.push(`<p class="finder__ambiguous">A bookmark on this page is gone, but I couldn't confirm which one. Possible matches:</p>`);
     res.ambiguous.forEach((group) => {
       parts.push(`<ul class="finder__list">${group.candidates.map((w) => `<li>${workLink(w)}</li>`).join("")}</ul>`);
     });
