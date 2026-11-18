@@ -63,8 +63,14 @@ const AO3LostAndFoundConstants = {
     // { flagged, restored, resolved, dismissed } for the popup's Oct 29 outage
     // notice: counted at startup, `resolved` once the repair has run.
     OUTAGE_NOTICE: "repair:outageNotice",
+    // One-time decode of HTML codes (e.g. &#39;) stored by pre-1.5.0 imports.
+    REPAIR_DECODE_ENTITIES: "repair:decode-entities-v1",
     SETTINGS: "settings"
   },
+
+  // AO3 lists bookmarks 20 per page; positions are always derived from this,
+  // never from how many blurbs happen to render on a (short last) page.
+  BOOKMARKS_PER_PAGE: 20,
 
   // Adaptive check-budget tuning. The per-run batch size is derived so a full
   // pass through N bookmarks finishes within ~a day (budget = clamp(N, floor,

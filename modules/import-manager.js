@@ -159,7 +159,6 @@ class ImportManager {
 
     let page = 1;
     let captured = 0;
-    let positionOffset = 0;
     let consecutive429s = 0;
 
     while (page <= maxPages) {
@@ -190,7 +189,10 @@ class ImportManager {
       if (!isLoggedInBookmarkPage(html)) break; // logged out — stay quiet
       consecutive429s = 0;
 
-      const parsed = Parser.parseBookmarkPage(html, { pageNumber: page, originalPositionOffset: positionOffset });
+      const parsed = Parser.parseBookmarkPage(html, {
+        pageNumber: page,
+        originalPositionOffset: (page - 1) * BOOKMARKS_PER_PAGE
+      });
       if (parsed.works.length === 0) break;
 
       const existing = await this.db.works.bulkGet(parsed.works.map((work) => work.workId));
@@ -198,7 +200,6 @@ class ImportManager {
 
       await this.writeChunk(parsed.works);
       captured += parsed.works.length;
-      positionOffset += parsed.works.length;
 
       if (reachedKnown) break; // overlapped with already-tracked works
       page += 1;
@@ -318,7 +319,9 @@ class ImportManager {
     const lastCompletedPage = Number(await this.getMeta(META.LAST_COMPLETED_PAGE)) || 0;
     let currentPage = lastCompletedPage + 1;
     let estimatedTotalPages = Number(await this.getMeta(META.ESTIMATED_TOTAL_PAGES)) || null;
-    let originalPositionOffset = Number(await this.getMeta(META.RECORDS_IMPORTED)) || 0;
+    // A running count of imported works (progress only). Positions come from
+    // the page number, so a deleted placeholder on a page can't shift them.
+    let recordsImported = Number(await this.getMeta(META.RECORDS_IMPORTED)) || 0;
 
     while (!this.pauseRequested) {
       const response = await this.fetchBookmarkPage(username, currentPage);
@@ -350,15 +353,15 @@ class ImportManager {
 
       const parsedPage = Parser.parseBookmarkPage(html, {
         pageNumber: currentPage,
-        originalPositionOffset
+        originalPositionOffset: (currentPage - 1) * BOOKMARKS_PER_PAGE
       });
 
       estimatedTotalPages = parsedPage.estimatedTotalPages || estimatedTotalPages || currentPage;
       await this.writeChunk(parsedPage.works);
 
-      originalPositionOffset += parsedPage.works.length;
+      recordsImported += parsedPage.works.length;
       await this.setMeta(META.LAST_COMPLETED_PAGE, currentPage);
-      await this.setMeta(META.RECORDS_IMPORTED, originalPositionOffset);
+      await this.setMeta(META.RECORDS_IMPORTED, recordsImported);
       await this.setMeta(META.ESTIMATED_TOTAL_PAGES, estimatedTotalPages);
 
       const progress = buildProgress(currentPage, estimatedTotalPages);
@@ -423,6 +426,9 @@ class ImportManager {
         ...incoming,
         status: prior.status,
         checkFailCount: prior.checkFailCount,
+        // When the current run of strikes began; dropping it would restart
+        // the 12-hour confirmation span every time the user views the page.
+        firstFailedAt: prior.firstFailedAt ?? null,
         lastChecked: prior.lastChecked,
         deletedAt: prior.deletedAt,
         notified: prior.notified,
@@ -446,7 +452,7 @@ class ImportManager {
 
 // AO3 paginates bookmark listings at 20 per page; used to map a page number to
 // the originalPosition range its blurbs occupy.
-var BOOKMARKS_PER_PAGE = 20;
+var BOOKMARKS_PER_PAGE = Constants.BOOKMARKS_PER_PAGE || 20;
 
 // Trim a stored record down to what the popup needs to name a missing work.
 function summariseWork(work, tier) {

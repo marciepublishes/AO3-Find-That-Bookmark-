@@ -51,11 +51,10 @@
     const pageNumber = injection?.getPageNumber(location) || 1;
     const blurbEls = [...document.querySelectorAll("li.bookmark.blurb, li.work.blurb")]
       .filter((element) => !element.classList.contains("ao3-lost-found"));
-    const pageSize = blurbEls.length || 20;
 
     const records = blurbEls
       .map((element, index) => parser.parseBlurbElement(element, {
-        originalPosition: (pageNumber - 1) * pageSize + index + 1
+        originalPosition: injection.positionOnPage(pageNumber, index)
       }))
       .filter(Boolean);
     if (records.length === 0) return;

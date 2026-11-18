@@ -455,6 +455,20 @@ async function dismissOutageNotice() {
   return { success: true };
 }
 
+// One-time (v1.5.0): earlier imports stored HTML codes literally, so titles
+// read e.g. "Don&#39;t Go". Decode them in place. modify() rewrites only the
+// text fields that change, inside one transaction, so it can't overwrite a
+// check result being saved at the same moment.
+async function decodeStoredEntitiesOnce() {
+  if (await getMeta(C.META.REPAIR_DECODE_ENTITIES)) return;
+  const { decodeRecordText } = globalThis.AO3LostAndFoundParser;
+  await db.works.toCollection().modify((work) => {
+    const changes = decodeRecordText(work);
+    if (changes) Object.assign(work, changes);
+  });
+  await setMeta(C.META.REPAIR_DECODE_ENTITIES, Date.now());
+}
+
 async function runScheduledMaintenance(alarm) {
   // Resume any import an eviction left unfinished before anything else.
   await reconcileImport();
@@ -494,6 +508,7 @@ alarmApi?.onAlarm?.addListener((alarm) => {
 actionApi?.setBadgeBackgroundColor?.({ color: BADGE_BG_COLOR });
 getSettings().then(applySettings).catch(console.error);
 prepareOutageNotice().catch(console.error);
+decodeStoredEntitiesOnce().catch(console.error);
 // Recover an import interrupted by a previous worker eviction.
 reconcileImport().catch(console.error);
 

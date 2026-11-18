@@ -315,6 +315,14 @@ function getPageSize(renderedCount) {
   return renderedCount > 0 ? renderedCount : 20;
 }
 
+// 1-based position in the whole bookmark list of the blurb at `index` on
+// `pageNumber`. AO3 always pages bookmarks at 20, so a short last page must
+// not shrink the page size (page 3 starts at 41, however many blurbs render).
+function positionOnPage(pageNumber, index) {
+  const perPage = Constants.BOOKMARKS_PER_PAGE || 20;
+  return ((Number(pageNumber) || 1) - 1) * perPage + index + 1;
+}
+
 // The work id for a rendered blurb. AO3 puts it in a `work-<id>` class on the
 // <li> (the element id is `bookmark_<bookmarkId>`, NOT the work id). Falls back
 // to the title link inside the heading.
@@ -337,13 +345,12 @@ function getRenderedWorkEntries(documentRef = globalThis.document, locationRef =
   const blurbs = [...documentRef.querySelectorAll("li.bookmark.blurb, li.work.blurb")]
     .filter((element) => !element.classList?.contains("ao3-lost-found"));
   const pageNumber = getPageNumber(locationRef);
-  const pageSize = blurbs.length || 20;
 
   return blurbs
     .map((element, index) => ({
       element,
       workId: workIdFromBlurb(element),
-      position: (pageNumber - 1) * pageSize + index + 1
+      position: positionOnPage(pageNumber, index)
     }))
     .filter((entry) => entry.workId);
 }
@@ -407,6 +414,7 @@ globalThis.AO3LostAndFoundInjection = {
   injectDashboardSection,
   injectStyles,
   placeBlurb,
+  positionOnPage,
   reconstructBlurb,
   shouldRenderLostFoundView,
   updateDashboardCounts,

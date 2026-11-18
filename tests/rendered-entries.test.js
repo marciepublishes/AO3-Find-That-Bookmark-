@@ -46,8 +46,8 @@ describe("getRenderedWorkEntries on real AO3 bookmark markup", () => {
       listFrom("bookmark-real-multi.html", "bookmark-real-tagged.html"),
       { search: "?page=3", pathname: "/users/marcie_writes_garbage/bookmarks" }
     );
-    // pageSize = rendered count (2): page 3 → 5, 6.
-    expect(entries.map((entry) => entry.position)).toEqual([5, 6]);
+    // AO3 pages hold 20 bookmarks however many render: page 3 starts at 41.
+    expect(entries.map((entry) => entry.position)).toEqual([41, 42]);
   });
 });
 

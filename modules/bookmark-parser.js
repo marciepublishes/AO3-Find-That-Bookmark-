@@ -496,23 +496,64 @@
   }
 
   function cleanText(value) {
-    return decodeHtml(String(value || "").replace(/\s+/g, " ").trim());
+    // Decode first so a decoded &nbsp; collapses and trims like any space.
+    return decodeHtml(String(value || "")).replace(/\s+/g, " ").trim();
   }
 
   function stripTags(value) {
     return String(value || "").replace(/<[^>]*>/g, " ");
   }
 
+  const NAMED_ENTITIES = {
+    amp: "&",
+    lt: "<",
+    gt: ">",
+    quot: '"',
+    apos: "'",
+    nbsp: " ",
+    hellip: "…",
+    mdash: "—",
+    ndash: "–",
+    lsquo: "‘",
+    rsquo: "’",
+    ldquo: "“",
+    rdquo: "”"
+  };
+
+  // One pass, so "&amp;#39;" becomes "&#39;" (not "'"). AO3 (Rails) escapes
+  // apostrophes as &#39;, so numeric codes matter, not just named ones.
+  // Unknown names and invalid code points are left exactly as they were.
   function decodeHtml(value) {
-    const entities = {
-      amp: "&",
-      lt: "<",
-      gt: ">",
-      quot: '"',
-      "#039": "'",
-      apos: "'"
-    };
-    return String(value).replace(/&([^;]+);/g, (match, entity) => entities[entity] || match);
+    return String(value).replace(/&(#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);/g, (match, entity) => {
+      if (entity[0] !== "#") {
+        return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, entity) ? NAMED_ENTITIES[entity] : match;
+      }
+      const hex = entity[1] === "x" || entity[1] === "X";
+      const code = parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+      const valid = Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff);
+      return valid ? String.fromCodePoint(code) : match;
+    });
+  }
+
+  // The stored fields that hold AO3 text. Used by the one-time repair of
+  // records saved before numeric codes were decoded.
+  const RECORD_TEXT_FIELDS = ["title", "rating", "chapters", "summary", "bookmarkNotes", "dateBookmarked", "workLastUpdated"];
+  const RECORD_LIST_FIELDS = ["authors", "fandoms", "warnings", "categories", "relationships", "characters", "freeTags", "bookmarkTags"];
+
+  // Returns only the fields that decoding would change, or null if none.
+  function decodeRecordText(work) {
+    const changes = {};
+    for (const field of RECORD_TEXT_FIELDS) {
+      if (typeof work?.[field] !== "string") continue;
+      const decoded = decodeHtml(work[field]);
+      if (decoded !== work[field]) changes[field] = decoded;
+    }
+    for (const field of RECORD_LIST_FIELDS) {
+      if (!Array.isArray(work?.[field])) continue;
+      const decoded = work[field].map((item) => (typeof item === "string" ? decodeHtml(item) : item));
+      if (decoded.some((item, index) => item !== work[field][index])) changes[field] = decoded;
+    }
+    return Object.keys(changes).length > 0 ? changes : null;
   }
 
   function escapeRegExp(value) {
@@ -522,6 +563,8 @@
   const api = {
     createWorkRecord,
     classifyFreeTags,
+    decodeHtml,
+    decodeRecordText,
     heuristicClassify,
     parseBlurbElement,
     parseBookmarkBlurb,
