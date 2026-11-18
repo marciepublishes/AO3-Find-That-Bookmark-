@@ -17,6 +17,15 @@
         <p class="popup__tagline">ohno<wbr>ithink<wbr>someone<wbr>deleted<wbr>their<wbr>work<wbr>whichone<wbr>isit?<wbr>wait<wbr>iknow<wbr>where<wbr>to<wbr>go!</p>
       </header>
 
+      <div id="outageNotice" class="notice" hidden>
+        <button id="outageOpen" class="notice__open" type="button" aria-controls="infoPanel">
+          <span class="notice__eyebrow">AO3 outage &middot; Oct 29</span>
+          <span id="outageBody" class="notice__body"></span>
+          <span class="notice__more">What happened? &rarr;</span>
+        </button>
+        <button id="outageDismiss" class="notice__dismiss" type="button" aria-label="Dismiss outage notice" title="Dismiss">&times;</button>
+      </div>
+
       <div class="counts">
         <a id="deletedCount" class="count count--deleted" target="_blank" rel="noreferrer">
           <span id="deletedNum" class="count__num">0</span>
@@ -26,7 +35,40 @@
 
       <p id="hint" class="hint"></p>
 
+      <div class="recheck">
+        <button id="recheckButton" class="recheck__button" type="button" hidden>Numbers look off? Re-check deleted works</button>
+        <p id="recheckResult" class="recheck__result" role="status" aria-live="polite"></p>
+      </div>
+
+      <section class="finder" aria-label="Find a missing bookmark now">
+        <button id="finderToggle" class="finder__toggle" type="button" aria-expanded="false" aria-controls="finderBody">
+          Noticed one's missing? Find it now
+        </button>
+        <div id="finderBody" class="finder__body" hidden>
+          <p class="finder__hint">Open your AO3 bookmarks, find the page the missing one was on, and enter that page number. Order is stable, so the extension can tell which work is gone.</p>
+          <form id="finderForm" class="finder__form">
+            <label class="finder__label" for="finderPage">Bookmarks page</label>
+            <input id="finderPage" class="finder__input" type="number" min="1" step="1" inputmode="numeric" value="1" />
+            <button id="finderSubmit" class="finder__submit" type="submit">Check page</button>
+          </form>
+          <div id="finderResult" class="finder__result" role="status" aria-live="polite"></div>
+        </div>
+      </section>
+
       <section id="infoPanel" class="info-panel" aria-label="How Find That Bookmark works">
+        <section id="outageInfo" class="info-update" aria-labelledby="outageInfoTitle" hidden>
+          <p class="info-update__eyebrow">Update</p>
+          <h2 id="outageInfoTitle" class="info-update__title">The Oct 29 AO3 outage</h2>
+          <p>While AO3 was down for maintenance on Oct 29, 2026, older versions of this extension mistook the outage for deletions. If you got a pile of "Deleted Work Detected" notifications, those were false alarms, and it's safe to dismiss them.</p>
+          <p>You don't need to do anything. Once AO3 is back up, the extension cleans this up on its own:</p>
+          <ul class="info-update__list">
+            <li>Works flagged on or after Oct 29 are quietly re-checked and come off your list if they're still up.</li>
+            <li>Deletions found <strong>before Oct 29 are kept exactly as they were.</strong></li>
+            <li>Anything that really was deleted during the outage gets confirmed again within a day or two, without another notification.</li>
+          </ul>
+          <p>It's also smarter now. When it sees AO3's maintenance page or server errors, it pauses instead of flagging anything.</p>
+        </section>
+
         <h2 class="info-panel__title">How "Find That Bookmark!" works</h2>
         <p>Find That Bookmark keeps a small, local record of the works you've bookmarked on AO3. It saves just the details AO3 already shows on your bookmarks page, such as title, author, tags, and summary.</p>
         <p>Every so often it checks whether those works are still up. If one has been deleted, it flags it, so you can finally answer "wait, which one was that?".</p>

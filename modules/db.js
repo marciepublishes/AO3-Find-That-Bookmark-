@@ -27,6 +27,16 @@ function initDatabase(DexieCtor) {
     meta: "&key"
   });
 
+  // v2: index bookmarkId so a deleted-work placeholder (which keeps only the
+  // bookmark id, not the work id) can be mapped straight back to the work it
+  // used to be. Adding an index reindexes existing rows; rows imported before
+  // this field existed index as undefined and fall back to positional
+  // reconciliation.
+  db.version(2).stores({
+    works: "&workId, status, lastChecked, deletedAt, dateBookmarked, pinnedToTop, checkFailCount, bookmarkId",
+    meta: "&key"
+  });
+
   return db;
 }
 

@@ -26,7 +26,10 @@ const SHARED = [
   "fonts/Lexend-Regular.ttf",
   "fonts/Lexend-Bold.ttf",
   "fonts/Lexend-OFL.txt",
-  "icons",
+  "icons/icon-16.png",
+  "icons/icon-32.png",
+  "icons/icon-48.png",
+  "icons/icon-128.png",
   "lib",
   "modules"
 ];

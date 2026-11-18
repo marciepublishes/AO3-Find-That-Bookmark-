@@ -29,6 +29,10 @@ describe("parseBlurbElement on real AO3 markup", () => {
     expect(work.rating).toBe("Explicit");
   });
 
+  test("captures the bookmark id from the <li id> (DOM path)", () => {
+    expect(work.bookmarkId).toBe("2799293576");
+  });
+
   test("keeps both warnings (from the split tag list)", () => {
     expect(work.warnings).toEqual(["Graphic Depictions Of Violence", "Rape/Non-Con"]);
   });

@@ -158,7 +158,18 @@ class ImportManager {
     let consecutive429s = 0;
 
     while (page <= maxPages) {
-      const response = await this.fetchBookmarkPage(name, page);
+      let response;
+      try {
+        response = await this.fetchBookmarkPage(name, page);
+      } catch (error) {
+        return {
+          success: false,
+          skipped: "network-error",
+          transient: true,
+          captured,
+          error: error instanceof Error ? error.message : String(error)
+        };
+      }
 
       if (response.status === 429) {
         consecutive429s += 1;
@@ -190,6 +201,100 @@ class ImportManager {
     }
 
     return { success: true, captured, pagesFetched: page };
+  }
+
+  /**
+   * On-demand "which bookmark went missing?" for a single listing page. Far
+   * cheaper and less scraper-shaped than the per-work HEAD sweep: one GET on the
+   * user's own bookmarks page, then reconcile what it shows against what we have
+   * stored. A deleted work leaves a "this has been deleted" placeholder in the
+   * list, and reconcileMissingOnPage maps that placeholder back to the work it
+   * used to be (by bookmark id, or by its surviving neighbours). Confidently
+   * matched works are confirmed deleted immediately — the in-list notice is
+   * authoritative, so there is no need to wait for the 3-strike HEAD dance.
+   */
+  async findMissingOnPage(username, pageNumber) {
+    const name = String(username || "").trim();
+    const page = Math.max(1, Math.floor(Number(pageNumber) || 0));
+    if (!name) return { success: false, error: "AO3 username is required." };
+    if (!Number(pageNumber)) return { success: false, error: "A bookmarks page number is required." };
+    if (this.running) return { success: false, skipped: "import-running" };
+
+    let response;
+    try {
+      response = await this.fetchBookmarkPage(name, page);
+    } catch (error) {
+      return {
+        success: false,
+        transient: true,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+    if (response.status === 429) {
+      return { success: false, paused: true, error: "AO3 is rate-limiting requests. Try again in a minute." };
+    }
+    if (!response.ok) {
+      return { success: false, error: `AO3 returned ${response.status} for bookmarks page ${page}.` };
+    }
+
+    const html = await response.text();
+    if (!isLoggedInBookmarkPage(html)) {
+      return { success: false, loggedOut: true, error: "You appear to be logged out of AO3 — log in and try again." };
+    }
+
+    const { works, deleted } = Parser.parseBookmarkPage(html, {
+      pageNumber: page,
+      originalPositionOffset: (page - 1) * BOOKMARKS_PER_PAGE
+    });
+
+    // Refresh metadata + bookmark ids (and current positions) for the live works
+    // we just saw; this also sharpens positional anchoring on future runs.
+    await this.writeChunk(works);
+
+    if (deleted.length === 0) {
+      return { success: true, page, deletedFound: 0, confirmed: [], ambiguous: [] };
+    }
+
+    const stored = await this.db.works.toArray();
+    const matches = Parser.reconcileMissingOnPage({ works, deleted, stored });
+
+    const confirmed = [];
+    const ambiguous = [];
+    for (const match of matches) {
+      if (match.work) {
+        const next = await this.confirmDeletedFromListing(match.work);
+        confirmed.push(summariseWork(next, match.tier));
+      } else {
+        ambiguous.push({
+          bookmarkId: match.bookmarkId,
+          candidates: match.candidates.map((c) => summariseWork(c))
+        });
+      }
+    }
+
+    return { success: true, page, deletedFound: deleted.length, confirmed, ambiguous };
+  }
+
+  // Confirm a work deleted because the listing said so outright. Mirrors the
+  // check-manager's confirmed-deletion shape (status, deletedAt, pin, fail
+  // count) and emits the same event so the badge, notification and popup all
+  // update through the existing path.
+  async confirmDeletedFromListing(work) {
+    const now = this.now();
+    const wasConfirmed = work.status === STATUS.DELETED;
+    const next = {
+      ...work,
+      status: STATUS.DELETED,
+      checkFailCount: Math.max(3, Number(work.checkFailCount) || 0),
+      deletedAt: work.deletedAt || now,
+      lastChecked: now,
+      pinnedToTop: true
+    };
+    await this.db.works.put(next);
+    if (!wasConfirmed) {
+      await this.bus?.emit?.(EVENTS.CHECKS_CONFIRMED, { work: next, previousStatus: work.status });
+    }
+    return next;
   }
 
   async run(username) {
@@ -320,6 +425,22 @@ class ImportManager {
   async setMeta(key, value) {
     await this.db.meta.put({ key, value });
   }
+}
+
+// AO3 paginates bookmark listings at 20 per page; used to map a page number to
+// the originalPosition range its blurbs occupy.
+var BOOKMARKS_PER_PAGE = 20;
+
+// Trim a stored record down to what the popup needs to name a missing work.
+function summariseWork(work, tier) {
+  const summary = {
+    workId: work.workId,
+    title: work.title || "",
+    authors: work.authors || [],
+    dateBookmarked: work.dateBookmarked || ""
+  };
+  if (tier) summary.tier = tier;
+  return summary;
 }
 
 function isLoggedInBookmarkPage(html) {

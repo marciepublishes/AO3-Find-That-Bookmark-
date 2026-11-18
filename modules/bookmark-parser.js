@@ -93,6 +93,7 @@
 
     return createWorkRecord({
       workId,
+      bookmarkId: bookmarkIdFromDom(li),
       title: text(workLink),
       authors: texts("h4.heading a[rel='author']"),
       fandoms: texts("h5.fandoms a.tag"),
@@ -118,12 +119,125 @@
   // ── Regex path (service worker import walk) ──────────────────────────────────
   function parseBookmarkPage(html, { pageNumber = 1, originalPositionOffset = 0 } = {}) {
     const blurbs = extractBookmarkBlurbHtml(html);
+    const works = [];
+    // Deleted-work blurbs: AO3 keeps them in the list but strips the work id,
+    // printing "This has been deleted, sorry!" and only the bookmark id. The
+    // import walk skips them (no work to track), but the reconcile path needs
+    // them — they are the in-list proof that *something* on this page died.
+    const deleted = [];
+
+    blurbs.forEach((blurbHtml, index) => {
+      const position = originalPositionOffset + index + 1;
+      const work = parseBookmarkBlurb(blurbHtml, { originalPosition: position });
+      if (work) {
+        works.push(work);
+        return;
+      }
+      const placeholder = parseDeletedBlurb(blurbHtml, position);
+      if (placeholder) deleted.push(placeholder);
+    });
+
     return {
-      works: blurbs.map((blurbHtml, index) => parseBookmarkBlurb(blurbHtml, {
-        originalPosition: originalPositionOffset + index + 1
-      })).filter(Boolean),
+      works,
+      deleted,
       estimatedTotalPages: getEstimatedTotalPagesFromHtml(html, pageNumber)
     };
+  }
+
+  // A blurb with no /works/ link is either a deleted work or a series/external
+  // bookmark. Only the deleted case carries AO3's <p class="message"> notice;
+  // series/external bookmarks render a normal title link instead. Returns the
+  // surviving identity (bookmark id + page position) or null.
+  function parseDeletedBlurb(html, position) {
+    const source = String(html || "");
+    const isDeleted = /<p\b[^>]*class=["'][^"']*\bmessage\b[^"']*["'][^>]*>[\s\S]*?(deleted|removed)/i.test(source);
+    if (!isDeleted) return null;
+    return { bookmarkId: bookmarkIdFromHtml(source), position, deleted: true };
+  }
+
+  // The bookmark id from a blurb: the <li id="bookmark_NNN"> is the canonical
+  // source; the /bookmarks/NNN/ action links are the fallback.
+  function bookmarkIdFromHtml(html) {
+    const source = String(html || "");
+    const fromId = source.match(/\bid=["']bookmark_(\d+)["']/i);
+    if (fromId) return fromId[1];
+    const fromLink = source.match(/\/bookmarks\/(\d+)\b/);
+    return fromLink ? fromLink[1] : "";
+  }
+
+  function bookmarkIdFromDom(li) {
+    const id = (li.getAttribute && li.getAttribute("id")) || "";
+    const fromId = String(id).match(/^bookmark_(\d+)$/);
+    if (fromId) return fromId[1];
+    const link = li.querySelector && li.querySelector("a[href*='/bookmarks/']");
+    const href = link && link.getAttribute("href");
+    const fromLink = href && href.match(/\/bookmarks\/(\d+)\b/);
+    return fromLink ? fromLink[1] : "";
+  }
+
+  // ── Reconcile a single fetched listing page against stored records ──────────
+  // Given the items as they appear on the page now (live works + deleted
+  // placeholders, each with a position) and the records we have stored, decide
+  // which stored works the page proves are gone.
+  //
+  //   Tier 1 (exact): the placeholder still carries a bookmark id, and we stored
+  //     that same bookmark id — a direct, order-independent hit.
+  //   Tier 2 (positional): no bookmark-id match (e.g. records imported before we
+  //     captured it). A deleted slot sits between two live works whose ids we DO
+  //     recognise; the stored work that sits between those same two anchors and
+  //     is no longer anywhere on the page is the culprit. Robust to bookmarks
+  //     added/removed elsewhere because it anchors on neighbours, not absolute
+  //     position. Returns every candidate; the caller only auto-confirms when a
+  //     gap yields exactly one.
+  function reconcileMissingOnPage({ works = [], deleted = [], stored = [] } = {}) {
+    const storedByBookmarkId = new Map(
+      stored.filter((s) => s.bookmarkId).map((s) => [String(s.bookmarkId), s])
+    );
+    const storedByWorkId = new Map(stored.map((s) => [String(s.workId), s]));
+    const storedByPosition = [...stored].sort(
+      (a, b) => (a.originalPosition || 0) - (b.originalPosition || 0)
+    );
+    const liveWorkIds = new Set(works.map((w) => String(w.workId)));
+
+    // Interleave live works and deleted placeholders back into page order.
+    const items = [
+      ...works.map((w) => ({ kind: "work", workId: String(w.workId), position: w.originalPosition })),
+      ...deleted.map((d) => ({ kind: "deleted", bookmarkId: d.bookmarkId, position: d.position }))
+    ].sort((a, b) => (a.position || 0) - (b.position || 0));
+
+    const anchorPosition = (index, step) => {
+      for (let i = index + step; i >= 0 && i < items.length; i += step) {
+        if (items[i].kind !== "work") continue;
+        const rec = storedByWorkId.get(items[i].workId);
+        if (rec) return rec.originalPosition;
+      }
+      return null;
+    };
+
+    return items
+      .map((item, index) => {
+        if (item.kind !== "deleted") return null;
+
+        const exact = item.bookmarkId && storedByBookmarkId.get(String(item.bookmarkId));
+        if (exact) {
+          return { tier: 1, bookmarkId: item.bookmarkId, work: exact, candidates: [exact] };
+        }
+
+        const lo = anchorPosition(index, -1);
+        const hi = anchorPosition(index, 1);
+        const candidates = storedByPosition.filter((s) =>
+          !liveWorkIds.has(String(s.workId))
+          && (lo == null || s.originalPosition > lo)
+          && (hi == null || s.originalPosition < hi));
+
+        return {
+          tier: 2,
+          bookmarkId: item.bookmarkId || "",
+          work: candidates.length === 1 ? candidates[0] : null,
+          candidates
+        };
+      })
+      .filter(Boolean);
   }
 
   function parseBookmarkBlurb(input, { originalPosition = 1 } = {}) {
@@ -148,6 +262,7 @@
 
     return createWorkRecord({
       workId: workMatch[1],
+      bookmarkId: bookmarkIdFromHtml(html),
       title: cleanText(stripTags(workMatch[2])),
       authors: relAuthorTexts(html),
       fandoms: tagTexts(sectionHtml(html, /<h5\b[^>]*class=["'][^"']*fandoms[^"']*["'][^>]*>([\s\S]*?)<\/h5>/i)),
@@ -222,6 +337,11 @@
     const importedAt = Date.now();
     return {
       workId: fields.workId,
+      // The bookmark's own id (distinct from the work id). It is the ONLY
+      // identifier AO3 still prints once a work is deleted, so storing it lets
+      // a later "this has been deleted" placeholder be mapped straight back to
+      // the work it used to be — see reconcileMissingOnPage.
+      bookmarkId: fields.bookmarkId || "",
       title: fields.title || "",
       authors: fields.authors || [],
       fandoms: fields.fandoms || [],
@@ -262,9 +382,41 @@
     return cleanText(stripTags(html.match(pattern)?.[1] || ""));
   }
 
+  // Slice each bookmark blurb out of a listing page. A blurb's <li> contains
+  // nested <li>s (required-tag icons, action buttons), so a non-greedy match to
+  // the first </li> truncates it — dropping tags, stats, summary and bookmark
+  // notes. Instead, open at each blurb <li> and balance <li>/</li> depth to find
+  // its real close.
   function extractBookmarkBlurbHtml(html) {
-    return [...html.matchAll(/<li\b[^>]*(?:bookmark|work)[^>]*\bblurb\b[^>]*>[\s\S]*?<\/li>/gi)]
-      .map((match) => match[0]);
+    const source = String(html || "");
+    const opener = /<li\b[^>]*(?:bookmark|work)[^>]*\bblurb\b[^>]*>/gi;
+    const tag = /<li\b[^>]*>|<\/li\s*>/gi;
+    const blurbs = [];
+
+    let open;
+    while ((open = opener.exec(source))) {
+      const start = open.index;
+      tag.lastIndex = start;
+      let depth = 0;
+      let end = -1;
+      let token;
+      while ((token = tag.exec(source))) {
+        if (token[0][1] === "/") {
+          depth -= 1;
+          if (depth === 0) {
+            end = tag.lastIndex;
+            break;
+          }
+        } else {
+          depth += 1;
+        }
+      }
+      if (end === -1) end = source.length; // unbalanced markup: take the rest
+      blurbs.push(source.slice(start, end));
+      opener.lastIndex = end; // don't re-open on the nested <li>s we just consumed
+    }
+
+    return blurbs;
   }
 
   function relAuthorTexts(html) {
@@ -374,7 +526,9 @@
     parseBlurbElement,
     parseBookmarkBlurb,
     parseBookmarkHtml,
-    parseBookmarkPage
+    parseBookmarkPage,
+    parseDeletedBlurb,
+    reconcileMissingOnPage
   };
 
   globalThis.AO3LostAndFoundParser = api;

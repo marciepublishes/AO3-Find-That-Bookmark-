@@ -172,6 +172,11 @@
     const nextUrl = injection.buildLostFoundFilterUrl(status, location);
     history.pushState({ ao3LostFound: status }, "", nextUrl);
 
+    // The URL changed without a page load, so rebuild our dashboard item now.
+    // This turns Deleted from an <a> into AO3's native <span class="current">.
+    const stats = await getStats();
+    ensureDashboardSection({ deleted: stats.deleted });
+
     const list = injection.getBookmarksList(document);
     if (!list) return;
 
@@ -205,8 +210,7 @@
 
     list.innerHTML = "";
     works.forEach((work) => {
-      const blurb = injection.reconstructBlurb(work, document);
-      attachReturnHandler(blurb, work, list, []);
+      const blurb = injection.reconstructBlurb(work, document, { showReturnButton: false });
       list.append(blurb);
     });
 
@@ -225,8 +229,13 @@
       pageSize: result.pageSize || pageSize,
       username: injection.getUsernameFromPath(location)
     });
+    injection.enableBookmarksReturnLink(document, location);
 
     document.querySelectorAll(".pagination").forEach((element) => element.remove());
+
+    // Opening this deleted-works view IS the acknowledgement: clear the "new"
+    // alert and the toolbar badge now that the user is actually looking at them.
+    runtime?.runtime?.sendMessage?.({ type: C.MSG.ACKNOWLEDGE_LOST }).catch(() => {});
   }
 
   window.addEventListener("popstate", async () => {
@@ -267,29 +276,13 @@
     removeExistingInjectedBlurbs(document);
 
     const filterStatus = injection.getLostFoundFilter(location);
-    if (filterStatus) {
+    if (injection.shouldRenderLostFoundView(location)) {
       await renderFilteredLostWorks(list, filterStatus, settings);
       return;
     }
 
-    const renderedEntries = getRenderedWorkEntries(document);
-    const pageNumber = injection.getPageNumber(location);
-    const pageSize = injection.getPageSize(renderedEntries.length);
-    const works = await requestMissingWorks(
-      renderedEntries.map((entry) => entry.workId),
-      pageNumber,
-      pageSize
-    );
-
-    works.forEach((work) => {
-      const blurb = injection.reconstructBlurb(work, document);
-      attachReturnHandler(blurb, work, list, renderedEntries);
-      injection.placeBlurb(list, blurb, work, renderedEntries);
-    });
-
-    if (works.length > 0) {
-      document.documentElement.dataset.ao3LostAndFoundReady = "true";
-    }
+    // Normal AO3 bookmark pages stay visually untouched. Deleted records are
+    // reconstructed only in the explicit Lost and Found filtered view.
   }
 
   init().catch((error) => {

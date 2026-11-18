@@ -247,6 +247,120 @@ describe("ImportManager.syncRecent", () => {
     expect(result).toMatchObject({ skipped: "import-running" });
     expect(fetched).toEqual([]);
   });
+
+  test("treats network-level fetch failures as transient skips", async () => {
+    const instance = new ImportManager({
+      bus: { emit: jest.fn() },
+      db: {
+        works: {
+          bulkGet: async () => [],
+          bulkPut: async () => {}
+        }
+      },
+      fetchFn: async () => {
+        throw new TypeError("Failed to fetch");
+      }
+    });
+
+    await expect(instance.syncRecent("marcie")).resolves.toMatchObject({
+      success: false,
+      skipped: "network-error",
+      transient: true,
+      error: "Failed to fetch"
+    });
+  });
+});
+
+describe("ImportManager.findMissingOnPage", () => {
+  // A backing store so reconcile + confirm-deletion can be observed end to end.
+  function worksDb(seed = []) {
+    const rows = new Map(seed.map((r) => [String(r.workId), { ...r }]));
+    return {
+      _rows: rows,
+      get: async (id) => rows.get(String(id)),
+      put: async (rec) => { rows.set(String(rec.workId), { ...rec }); },
+      bulkGet: async (ids) => ids.map((id) => rows.get(String(id))),
+      bulkPut: async (recs) => { recs.forEach((r) => rows.set(String(r.workId), { ...r })); },
+      toArray: async () => [...rows.values()]
+    };
+  }
+
+  function manager({ html, seed = [] } = {}) {
+    const works = worksDb(seed);
+    const emit = jest.fn();
+    const instance = new ImportManager({
+      bus: { emit },
+      db: { works },
+      delayFn: async () => {},
+      now: () => 1000,
+      fetchFn: async () => ({ ok: true, status: 200, text: async () => html })
+    });
+    return { instance, works, emit };
+  }
+
+  const page = fixture("bookmark-listing-page.html"); // deleted bookmark 2907130126 + works 33761359, 73617951
+
+  test("Tier 1: matches the deleted placeholder by stored bookmarkId and confirms it", async () => {
+    const { instance, works, emit } = manager({
+      html: page,
+      seed: [
+        { workId: "900", bookmarkId: "2907130126", originalPosition: 1, status: "active", title: "Ghost Fic", checkFailCount: 0 },
+        { workId: "33761359", bookmarkId: "2895346471", originalPosition: 2, status: "active" },
+        { workId: "73617951", bookmarkId: "2799293576", originalPosition: 3, status: "active" }
+      ]
+    });
+
+    const result = await instance.findMissingOnPage("marcie", 1);
+
+    expect(result.success).toBe(true);
+    expect(result.confirmed).toHaveLength(1);
+    expect(result.confirmed[0]).toMatchObject({ workId: "900", title: "Ghost Fic", tier: 1 });
+    // Persisted as a confirmed deletion.
+    const stored = await works.get("900");
+    expect(stored).toMatchObject({ status: "deleted", deletedAt: 1000, pinnedToTop: true });
+    expect(stored.checkFailCount).toBeGreaterThanOrEqual(3);
+    // Fired the shared confirmed-deletion event so badge/notification update.
+    expect(emit).toHaveBeenCalledWith("checks:confirmed", expect.objectContaining({ work: expect.objectContaining({ workId: "900" }) }));
+  });
+
+  test("Tier 2: resolves by neighbour anchors when no bookmarkId was stored", async () => {
+    const { instance, works } = manager({
+      html: page,
+      seed: [
+        { workId: "900", originalPosition: 1, status: "active", title: "Ghost Fic" }, // no bookmarkId
+        { workId: "33761359", originalPosition: 2, status: "active" },
+        { workId: "73617951", originalPosition: 3, status: "active" }
+      ]
+    });
+
+    const result = await instance.findMissingOnPage("marcie", 1);
+
+    expect(result.confirmed).toHaveLength(1);
+    expect(result.confirmed[0]).toMatchObject({ workId: "900", tier: 2 });
+    expect((await works.get("900")).status).toBe("deleted");
+  });
+
+  test("reports logged-out without touching the database", async () => {
+    const { instance, works } = manager({ html: "<html><body>Please log in</body></html>", seed: [] });
+    const result = await instance.findMissingOnPage("marcie", 1);
+    expect(result).toMatchObject({ success: false, loggedOut: true });
+    expect(await works.toArray()).toEqual([]);
+  });
+
+  test("requires a page number", async () => {
+    const { instance } = manager({ html: page });
+    expect(await instance.findMissingOnPage("marcie")).toMatchObject({ success: false });
+  });
+
+  test("a page with no deletions confirms nothing", async () => {
+    const clean = '<div id="user-menu"></div><ol class="bookmark index group">'
+      + '<li class="bookmark blurb work-1"><h4 class="heading"><a href="/works/1">A</a></h4></li>'
+      + "</ol>";
+    const { instance, emit } = manager({ html: clean, seed: [{ workId: "1", originalPosition: 1, status: "active" }] });
+    const result = await instance.findMissingOnPage("marcie", 1);
+    expect(result).toMatchObject({ success: true, deletedFound: 0, confirmed: [] });
+    expect(emit).not.toHaveBeenCalledWith("checks:confirmed", expect.anything());
+  });
 });
 
 describe("ImportManager timing helpers", () => {

@@ -10,6 +10,9 @@
  * - Performs HEAD-only checks in bounded batches.
  * - Emits checks:confirmed when a work is newly confirmed deleted.
  * - Emits checks:badge-refresh when badge count should be re-queried.
+ * - Never reads an AO3 outage as a deletion: 5xx / network failures are not
+ *   strikes, a 404 only counts if a canary work still loads, and confirmation
+ *   needs strikes spread over CHECK.CONFIRM_MIN_SPAN_MS.
  *
  * This module does not import other extension modules. background.js owns the
  * database, event bus, notifications, alarms, and badge APIs.
@@ -44,6 +47,7 @@ class CheckManager {
     this.backoffDelayFn = backoffDelayFn || delayFn;
     this.running = false;
     this.consecutive429s = 0;
+    this.consecutiveTransient = 0;
   }
 
   async runBatch({ manual = false, batchSize } = {}) {
@@ -52,6 +56,7 @@ class CheckManager {
     }
 
     this.running = true;
+    this.consecutiveTransient = 0;
     const limit = Math.max(1, Number(batchSize)
       || randomDelay(this.batchSizeRange[0], this.batchSizeRange[1], this.random));
     let processed = 0;
@@ -76,6 +81,9 @@ class CheckManager {
         if (outcome.paused) {
           return { success: false, paused: true, processed, error: "Paused after repeated AO3 rate-limit responses." };
         }
+        if (outcome.outage) {
+          return this.stopForOutage(processed);
+        }
         if (outcome.processed) {
           pending = outcome.pending;
           processed += 1;
@@ -95,6 +103,9 @@ class CheckManager {
         if (outcome.paused) {
           return { success: false, paused: true, processed, error: "Paused after repeated AO3 rate-limit responses." };
         }
+        if (outcome.outage) {
+          return this.stopForOutage(processed);
+        }
         if (outcome.processed) {
           pending = outcome.pending;
           processed += 1;
@@ -112,6 +123,15 @@ class CheckManager {
 
       await this.setMeta(META.CHECK_LAST_RUN, this.now());
       await this.persistQueues(pending, queue);
+
+      // First clean run after an outage: anything confirmed deleted since it
+      // began gets re-verified, in case a strike slipped past the guards.
+      const outageStartedAt = await this.getMeta(META.OUTAGE_STARTED);
+      if (outageStartedAt) {
+        await this.setMeta(META.OUTAGE_STARTED, null);
+        await this.requeueLost({ since: outageStartedAt });
+      }
+
       await this.bus?.emit?.(EVENTS.CHECKS_BADGE_REFRESH, { manual, processed });
       return { success: true, processed };
     } catch (error) {
@@ -123,8 +143,20 @@ class CheckManager {
     }
   }
 
+  // AO3 looks down (server errors, or a 404 while the canary also fails). End
+  // the run without recording anything; the next scheduled run tries again.
+  async stopForOutage(processed) {
+    const message = "AO3 seems to be having trouble right now. Checking will resume automatically.";
+    await this.setMeta(META.CHECK_LAST_RUN, this.now());
+    if (!(await this.getMeta(META.OUTAGE_STARTED))) {
+      await this.setMeta(META.OUTAGE_STARTED, this.now());
+    }
+    await this.bus?.emit?.(EVENTS.CHECKS_PAUSED, { reason: "outage", message });
+    return { success: false, outage: true, processed, error: message };
+  }
+
   // Checks the work at the front of `lane`, records the transition, and keeps
-  // the confirmation fast-lane in sync. Returns { processed, paused, pending }.
+  // the confirmation fast-lane in sync. Returns { processed, paused, outage, pending }.
   async processWorkId(lane, seen, getState) {
     const { pending, queue } = getState();
     const workId = lane.shift();
@@ -144,18 +176,48 @@ class CheckManager {
       return { processed: false, paused: shouldPause, pending };
     }
 
+    if (result.transient) {
+      // Server error / network failure: says nothing about the work. Skip it
+      // for this run (it stays in the pending lane, or goes to the back of the
+      // rotation) and stop the run if errors keep coming.
+      seen.add(workId);
+      if (lane === queue) queue.push(workId);
+      await this.persistQueues(pending, queue);
+      this.consecutiveTransient += 1;
+      const outage = this.consecutiveTransient >= checkConfig().OUTAGE_STREAK;
+      return { processed: true, paused: false, outage, pending };
+    }
+
+    // Before a result is allowed to change anything, make sure AO3 is really
+    // serving pages: a maintenance page can come back as 200 or 403, which HEAD
+    // can't tell apart from the real thing. Strikes always get a fresh check;
+    // other status changes may reuse a recent healthy result.
+    const nextWork = applyStateTransition(work, result, this.now());
+    const addsStrike = result.deleted && work.status !== STATUS.DELETED;
+    if ((addsStrike || nextWork.status !== work.status)
+      && !(await this.isArchiveHealthy(workId, { fresh: addsStrike }))) {
+      lane.unshift(workId);
+      await this.persistQueues(pending, queue);
+      return { processed: false, paused: false, outage: true, pending };
+    }
+
     seen.add(workId);
     this.consecutive429s = 0;
+    this.consecutiveTransient = 0;
+    if (result.ok) {
+      await this.rememberCanary(workId);
+    }
 
-    const nextWork = applyStateTransition(work, result, this.now());
     const confirmedStatusChanged = nextWork.confirmedStatusChanged;
     delete nextWork.confirmedStatusChanged;
     nextWork.priorityScore = getPriorityScore(nextWork, this.now());
     await this.db.works.put(nextWork);
 
-    // Add to the fast-lane while unconfirmed, drop once resolved either way.
+    // Add to the fast-lane while collecting strikes, drop once resolved either
+    // way. A work with all its strikes but not yet the minimum span waits in the
+    // normal rotation instead of being re-checked every run.
     let nextPending = pending.filter((id) => id !== workId);
-    if (nextWork.status === STATUS.UNCONFIRMED) {
+    if (nextWork.status === STATUS.UNCONFIRMED && nextWork.checkFailCount < checkConfig().CONFIRM_STRIKES) {
       nextPending.push(workId);
     }
 
@@ -172,13 +234,98 @@ class CheckManager {
       throw new Error("Fetch is unavailable in this browser context.");
     }
 
-    const response = await this.fetchFn(`https://archiveofourown.org/works/${encodeURIComponent(work.workId)}`, {
-      method: "HEAD",
-      credentials: "include",
-      redirect: "follow"
-    });
+    try {
+      const response = await this.fetchFn(`https://archiveofourown.org/works/${encodeURIComponent(work.workId)}`, {
+        method: "HEAD",
+        credentials: "include",
+        redirect: "follow"
+      });
+      return normalizeHeadResult(response);
+    } catch (error) {
+      // Offline, DNS failure, connection reset: transient, not a verdict.
+      return normalizeHeadResult(null);
+    }
+  }
 
-    return normalizeHeadResult(response);
+  // GET a work that recently loaded fine (or the AO3 homepage if none is
+  // known) and read the start of the page. If it errors or is AO3's
+  // maintenance page, AO3 itself is unhealthy and results can't be trusted.
+  async isArchiveHealthy(excludeWorkId, { fresh = true } = {}) {
+    if (!fresh && this.healthyUntil > this.now()) return true;
+
+    let canary = await this.getMeta(META.CHECK_CANARY);
+    if (canary === excludeWorkId) canary = null;
+    const url = canary
+      ? `https://archiveofourown.org/works/${encodeURIComponent(canary)}`
+      : "https://archiveofourown.org/";
+
+    await this.delayFn(randomDelay(this.requestDelayRange[0], this.requestDelayRange[1], this.random));
+    let statusCode = 0;
+    let maintenance = false;
+    try {
+      const response = await this.fetchFn(url, { method: "GET", credentials: "include", redirect: "follow" });
+      statusCode = response?.status || 0;
+      maintenance = isMaintenancePage(await readPageStart(response));
+    } catch (error) {
+      statusCode = 0;
+    }
+
+    if (canary && !maintenance && (statusCode === 404 || statusCode === 410)) {
+      // The canary itself may have been deleted; use the homepage next time
+      // until another work answers 200.
+      this.canaryId = null;
+      await this.setMeta(META.CHECK_CANARY, null);
+    }
+
+    const healthy = statusCode >= 200 && statusCode < 300 && !maintenance;
+    this.healthyUntil = healthy ? this.now() + HEALTH_CACHE_MS : 0;
+    return healthy;
+  }
+
+  async rememberCanary(workId) {
+    if (this.canaryId === workId) return;
+    this.canaryId = workId;
+    await this.setMeta(META.CHECK_CANARY, workId);
+  }
+
+  // Send deleted/unconfirmed works back through confirmation from zero strikes,
+  // to undo false positives from an AO3 outage: works that load return to
+  // active, real deletions are re-confirmed (already-notified works keep
+  // `notified`, so no repeat notification). See requeueLost for `since`.
+  async reverifyLost({ since = null } = {}) {
+    if (this.running) {
+      return { success: false, error: "A check batch is running; try again in a moment." };
+    }
+
+    const result = await this.requeueLost({ since });
+    await this.bus?.emit?.(EVENTS.CHECKS_BADGE_REFRESH, { manual: true, processed: 0 });
+    return { success: true, ...result };
+  }
+
+  // With `since` (a timestamp), deletions confirmed before it are trusted and
+  // left alone. An unconfirmed work whose deletedAt predates `since` was
+  // confirmed back then and only reset by a blanket re-check (v1.4.1), so it is
+  // restored to deleted rather than re-verified. Without `since`, everything
+  // deleted or unconfirmed is re-verified.
+  async requeueLost({ since = null } = {}) {
+    const { reset, restored, flaggedIds } = planRequeue(await this.db.works.toArray(), since);
+
+    if (reset.length + restored.length > 0) {
+      await this.db.works.bulkPut([...reset, ...restored]);
+    }
+
+    const pending = new Set(await this.getPending());
+    reset.forEach((work) => pending.add(work.workId));
+    restored.forEach((work) => pending.delete(work.workId));
+    await this.setMeta(META.CHECK_PENDING, [...pending]);
+    return { reverifying: reset.length, restored: restored.length, flaggedIds };
+  }
+
+  // What requeueLost would do, without writing anything. `flagged` counts the
+  // works currently shown as deleted that would be cleared.
+  async previewRequeue({ since = null } = {}) {
+    const { reset, restored, flaggedIds } = planRequeue(await this.db.works.toArray(), since);
+    return { reverifying: reset.length, restored: restored.length, flagged: flaggedIds.length };
   }
 
   async rebuildQueue() {
@@ -239,28 +386,96 @@ class CheckManager {
   }
 }
 
+// Splits works for requeueLost: `reset` go back through confirmation,
+// `restored` return to deleted, `flaggedIds` are reset works that were showing
+// as deleted (their notifications can be cleared).
+function planRequeue(works, since = null) {
+  const confirmedBefore = (work) => since != null && Number(work.deletedAt || 0) < since;
+  const reset = [];
+  const restored = [];
+  const flaggedIds = [];
+
+  for (const work of works) {
+    if (work.status === STATUS.UNCONFIRMED && Number(work.deletedAt) > 0 && confirmedBefore(work)) {
+      restored.push({ ...work, status: STATUS.DELETED, checkFailCount: Math.max(3, Number(work.checkFailCount) || 0) });
+    } else if (work.status === STATUS.UNCONFIRMED || (work.status === STATUS.DELETED && !confirmedBefore(work))) {
+      if (work.status === STATUS.DELETED) flaggedIds.push(work.workId);
+      reset.push({ ...work, status: STATUS.UNCONFIRMED, checkFailCount: 0, firstFailedAt: null });
+    }
+  }
+
+  return { reset, restored, flaggedIds };
+}
+
+// How long a healthy canary result is reused for non-strike status changes.
+const HEALTH_CACHE_MS = 5 * 60 * 1000;
+
+// AO3's maintenance / "Request temporarily denied" page. It can arrive with a
+// 200, so the status code alone can't be trusted.
+function isMaintenancePage(html) {
+  return /down for maintenance|Request temporarily denied/i.test(String(html || ""));
+}
+
+// Reads only the first few KB of a page (the maintenance marker is near the
+// top), so a health check never downloads a whole chapter.
+async function readPageStart(response, maxChars = 16384) {
+  try {
+    const reader = response?.body?.getReader?.();
+    if (!reader) {
+      return typeof response?.text === "function" ? (await response.text()).slice(0, maxChars) : "";
+    }
+    const decoder = new TextDecoder();
+    let text = "";
+    while (text.length < maxChars) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    reader.cancel().catch(() => {});
+    return text;
+  } catch (error) {
+    return "";
+  }
+}
+
+function checkConfig() {
+  return {
+    CONFIRM_STRIKES: 3,
+    CONFIRM_MIN_SPAN_MS: 12 * 60 * 60 * 1000,
+    OUTAGE_STREAK: 3,
+    ...(Constants.CHECK || {})
+  };
+}
+
 function normalizeHeadResult(response) {
   const statusCode = response?.status || 0;
+  const deleted = statusCode === 404 || statusCode === 410;
+  // Restricted/locked works still exist; tracked only so a 401/403 is never
+  // mistaken for a deletion.
+  const restricted = statusCode === 401 || statusCode === 403;
+  const ok = statusCode >= 200 && statusCode < 300;
 
   return {
     statusCode,
-    deleted: statusCode === 404 || statusCode === 410,
-    // Restricted/locked works still exist; tracked only so a 401/403 is never
-    // mistaken for a deletion.
-    restricted: statusCode === 401 || statusCode === 403,
-    ok: statusCode >= 200 && statusCode < 300
+    deleted,
+    restricted,
+    ok,
+    // Anything else (5xx, Cloudflare 52x, network failure = 0, odd 3xx/4xx)
+    // says nothing about whether the work exists.
+    transient: !deleted && !restricted && !ok && statusCode !== 429
   };
 }
 
 function applyStateTransition(work, result, now = Date.now()) {
   const statusCode = result?.statusCode;
+  const skipped = statusCode === 429 || Boolean(result?.transient);
   const base = {
     ...work,
-    lastChecked: statusCode === 429 ? work.lastChecked ?? null : now,
+    lastChecked: skipped ? work.lastChecked ?? null : now,
     confirmedStatusChanged: false
   };
 
-  if (statusCode === 429) {
+  if (skipped) {
     return base;
   }
 
@@ -273,24 +488,29 @@ function applyStateTransition(work, result, now = Date.now()) {
   }
 
   if (result?.deleted) {
-    const nextFailCount = (Number(work.checkFailCount) || 0) + 1;
+    const { CONFIRM_STRIKES, CONFIRM_MIN_SPAN_MS } = checkConfig();
+    const previousFails = Number(work.checkFailCount) || 0;
+    const nextFailCount = previousFails + 1;
+    const firstFailedAt = previousFails > 0 && Number.isFinite(work.firstFailedAt) ? work.firstFailedAt : now;
+    const alreadyConfirmed = work.status === STATUS.DELETED;
 
-    if (nextFailCount >= 3) {
-      const wasConfirmed = work.status === STATUS.DELETED;
+    if (alreadyConfirmed || (nextFailCount >= CONFIRM_STRIKES && now - firstFailedAt >= CONFIRM_MIN_SPAN_MS)) {
       return {
         ...base,
         status: STATUS.DELETED,
         checkFailCount: nextFailCount,
+        firstFailedAt,
         deletedAt: work.deletedAt || now,
-        pinnedToTop: true,
-        confirmedStatusChanged: !wasConfirmed
+        pinnedToTop: alreadyConfirmed ? work.pinnedToTop : true,
+        confirmedStatusChanged: !alreadyConfirmed
       };
     }
 
     return {
       ...base,
       status: STATUS.UNCONFIRMED,
-      checkFailCount: nextFailCount
+      checkFailCount: nextFailCount,
+      firstFailedAt
     };
   }
 
@@ -299,19 +519,14 @@ function applyStateTransition(work, result, now = Date.now()) {
       ...base,
       status: STATUS.ACTIVE,
       checkFailCount: 0,
-      deletedAt: null
+      firstFailedAt: null,
+      deletedAt: null,
+      // It came back, so a future deletion deserves a fresh notification.
+      notified: false
     };
   }
 
-  const nextFailCount = (Number(work.checkFailCount) || 0) + 1;
-  return {
-    ...base,
-    status: nextFailCount >= 3 ? STATUS.DELETED : STATUS.UNCONFIRMED,
-    checkFailCount: nextFailCount,
-    deletedAt: nextFailCount >= 3 ? work.deletedAt || now : work.deletedAt ?? null,
-    pinnedToTop: nextFailCount >= 3,
-    confirmedStatusChanged: nextFailCount >= 3 && work.status !== STATUS.DELETED
-  };
+  return base;
 }
 
 function compareQueueItems(left, right) {
@@ -369,6 +584,7 @@ globalThis.AO3LostAndFoundCheck = {
   computeBackoff,
   computeBatchSize,
   getPriorityScore,
+  isMaintenancePage,
   normalizeHeadResult,
   randomDelay
 };

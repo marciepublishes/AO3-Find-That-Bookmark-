@@ -14,7 +14,7 @@ const Constants = globalThis.AO3LostAndFoundConstants
   || (typeof require === "function" ? require("./constants") : {});
 const { STATUS } = Constants;
 
-function reconstructBlurb(work, documentRef = globalThis.document) {
+function reconstructBlurb(work, documentRef = globalThis.document, { showReturnButton = true } = {}) {
   const item = documentRef.createElement("li");
   const detectedAt = work.deletedAt;
 
@@ -28,10 +28,10 @@ function reconstructBlurb(work, documentRef = globalThis.document) {
         by ${authorLinks(work.authors)}
       </h4>
       <h5 class="fandoms heading">${tagLinks(work.fandoms)}</h5>
-      <ul class="required-tags">
-        ${work.rating ? `<li><a class="rating tag">${escapeHtml(work.rating)}</a></li>` : ""}
-        ${(work.warnings || []).map((tag) => `<li><a class="warning tag">${escapeHtml(tag)}</a></li>`).join("")}
-        ${(work.categories || []).map((tag) => `<li><a class="category tag">${escapeHtml(tag)}</a></li>`).join("")}
+      <ul class="ao3-lost-found__required">
+        ${work.rating ? `<li class="ao3-lost-found__req ao3-lost-found__req--rating">${escapeHtml(work.rating)}</li>` : ""}
+        ${(work.warnings || []).map((tag) => `<li class="ao3-lost-found__req ao3-lost-found__req--warning">${escapeHtml(tag)}</li>`).join("")}
+        ${(work.categories || []).map((tag) => `<li class="ao3-lost-found__req ao3-lost-found__req--category">${escapeHtml(tag)}</li>`).join("")}
       </ul>
     </div>
     <p class="ao3-lost-found__status">
@@ -58,7 +58,7 @@ function reconstructBlurb(work, documentRef = globalThis.document) {
     </div>
     <p class="ao3-lost-found__actions">
       <a class="ao3-lost-found__wayback" href="${waybackUrl(work.workId)}" target="_blank" rel="noreferrer">Search Wayback Machine</a>
-      <button class="ao3-lost-found__return" type="button">Return to original position</button>
+      ${showReturnButton ? '<button class="ao3-lost-found__return" type="button">Return to original position</button>' : ""}
     </p>
   `;
 
@@ -69,18 +69,41 @@ function injectStyles(documentRef = globalThis.document, settings = {}) {
   const existing = documentRef.getElementById("ao3-lost-found-styles");
   if (existing) existing.remove();
 
-  const deletedColor = sanitizeColor(settings.deletedColor, "#e089a0");
+  const deletedColor = sanitizeColor(settings.deletedColor, "#41653E");
 
   const style = documentRef.createElement("style");
   style.id = "ao3-lost-found-styles";
   style.textContent = `
     .ao3-lost-found {
       border: 2px solid ${deletedColor};
-      box-shadow: 0 0 12px ${deletedColor};
-      background: #cce089;
+      background: #A8BBA9;
       color: #1c1a17;
       padding: 0.75em;
       position: relative;
+    }
+    /* Our own required-tags row. AO3's ul.required-tags styles each <li> as a
+       fixed-size sprite icon slot and hides the label text; reusing that class
+       made long labels (e.g. "Creator Chose Not To Use Archive Warnings")
+       overflow the slot and overlap the neighbouring icons. This is a plain,
+       wrapping pill row that AO3's icon CSS can't touch. */
+    .ao3-lost-found__required {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35em;
+      margin: 0.4em 0;
+      padding: 0;
+      list-style: none;
+    }
+    .ao3-lost-found__req {
+      display: inline-block;
+      padding: 0.1em 0.55em;
+      border: 1px solid rgba(65, 101, 62, 0.4);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.4);
+      color: #34412f;
+      font-size: 0.85em;
+      line-height: 1.4;
+      white-space: normal;
     }
     .ao3-lost-found__status,
     .ao3-lost-found__actions {
@@ -93,20 +116,28 @@ function injectStyles(documentRef = globalThis.document, settings = {}) {
     .ao3-lost-found__badge {
       border-radius: 4px;
       padding: 0.2em 0.45em;
-      color: #1c1a17;
+      color: #A8BBA9;
       background: ${deletedColor};
       font-weight: 700;
       letter-spacing: 0.08em;
       text-transform: uppercase;
     }
+    .ao3-lost-found__wayback {
+      color: #41653E;
+      font-weight: 600;
+    }
     .ao3-lost-found__return {
-      border: 1px solid currentColor;
+      border: none;
       border-radius: 4px;
-      padding: 0.2em 0.55em;
-      background: transparent;
-      color: inherit;
+      padding: 0.25em 0.7em;
+      background: #41653E;
+      color: #A8BBA9;
       cursor: pointer;
       font: inherit;
+      font-weight: 600;
+    }
+    .ao3-lost-found__return:hover {
+      opacity: 0.85;
     }
   `;
   documentRef.head.append(style);
@@ -155,12 +186,17 @@ function createDashboardItem(documentRef, status, label, count, locationRef) {
   const item = documentRef.createElement("li");
   item.dataset.ao3LostFoundDashboard = "true";
 
-  const link = documentRef.createElement("a");
-  link.href = buildLostFoundFilterUrl(status, locationRef);
-  link.dataset.ao3LostFoundCount = status;
-  link.textContent = formatDashboardLabel(label, count);
+  const isCurrent = getLostFoundFilter(locationRef) === status;
+  const control = documentRef.createElement(isCurrent ? "span" : "a");
+  if (isCurrent) {
+    control.className = "current";
+  } else {
+    control.href = buildLostFoundFilterUrl(status, locationRef);
+  }
+  control.dataset.ao3LostFoundCount = status;
+  control.textContent = formatDashboardLabel(label, count);
 
-  item.append(link);
+  item.append(control);
   return item;
 }
 
@@ -200,6 +236,28 @@ function getDashboardLinkStatus(text) {
 function getLostFoundFilter(locationRef = globalThis.location) {
   const params = new URLSearchParams(locationRef.search || "");
   return params.get("ao3_lost_found") === STATUS.DELETED ? STATUS.DELETED : null;
+}
+
+function shouldRenderLostFoundView(locationRef = globalThis.location) {
+  return getLostFoundFilter(locationRef) === STATUS.DELETED;
+}
+
+function enableBookmarksReturnLink(documentRef = globalThis.document, locationRef = globalThis.location) {
+  if (!shouldRenderLostFoundView(locationRef)) return false;
+
+  const dashboard = documentRef.querySelector("#dashboard");
+  if (!dashboard) return false;
+
+  const current = [...dashboard.querySelectorAll("span.current")]
+    .find((element) => /^bookmarks(?:\s*\(\d+\))?$/i.test(element.textContent.trim()));
+  if (!current) return false;
+
+  const link = documentRef.createElement("a");
+  link.href = `/users/${encodeURIComponent(getUsernameFromPath(locationRef))}/bookmarks`;
+  link.textContent = current.textContent;
+  link.dataset.ao3LostFoundReturn = "bookmarks";
+  current.replaceWith(link);
+  return true;
 }
 
 function updateFilteredHeading(documentRef, { status, total, pageNumber, pageSize, username }) {
@@ -335,6 +393,7 @@ function sanitizeColor(value, fallback) {
 globalThis.AO3LostAndFoundInjection = {
   buildBookmarkTagUrl,
   buildLostFoundFilterUrl,
+  enableBookmarksReturnLink,
   formatFilteredHeading,
   formatDashboardLabel,
   getBookmarksList,
@@ -349,6 +408,7 @@ globalThis.AO3LostAndFoundInjection = {
   injectStyles,
   placeBlurb,
   reconstructBlurb,
+  shouldRenderLostFoundView,
   updateDashboardCounts,
   updateFilteredHeading,
   waybackUrl

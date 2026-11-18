@@ -50,7 +50,7 @@ const DEFAULT_SETTINGS = {
   checkDelayMax: 6000,
   checkFrequencyMinutes: 30,
   autoCheckEnabled: true,
-  deletedColor: "#e089a0"
+  deletedColor: "#41653E"
 };
 
 async function getMeta(key) {
@@ -64,6 +64,11 @@ async function setMeta(key, value) {
 
 async function countByStatus(status) {
   return db.works.where("status").equals(status).count();
+}
+
+async function getVisibleOutageNotice() {
+  const notice = await getMeta(C.META.OUTAGE_NOTICE);
+  return notice && !notice.dismissed ? notice : null;
 }
 
 async function getStats() {
@@ -89,6 +94,9 @@ async function getStats() {
     newLost,
     lastChecked: lastChecked?.lastChecked ?? null,
     username: await getMeta(C.META.USERNAME),
+    outageNotice: await getVisibleOutageNotice(),
+    // Keeps the outage write-up in the help panel even after the notice is dismissed.
+    outageAffected: Boolean(await getMeta(C.META.OUTAGE_NOTICE)),
     importStatus: await getMeta(C.META.IMPORT_STATUS),
     importLastCompletedPage: await getMeta(C.META.LAST_COMPLETED_PAGE),
     importEstimatedTotalPages: await getMeta(C.META.ESTIMATED_TOTAL_PAGES)
@@ -96,8 +104,13 @@ async function getStats() {
 }
 
 async function acknowledgeLostWorks() {
+  // Mark every currently-deleted work as seen, so newLost (and the badge) go to
+  // zero. Refresh the badge and push fresh stats so an open popup clears live.
   await setMeta(C.META.LOST_ACKNOWLEDGED, await getLostWorkCount());
-  return { success: true, stats: await getStats() };
+  await updateBadgeCount();
+  const stats = await getStats();
+  broadcast({ type: C.MSG.STATS_UPDATED, stats });
+  return { success: true, stats };
 }
 
 async function getLostWorkCount() {
@@ -108,16 +121,21 @@ const BADGE_BG_COLOR = "#EC1F32";
 const BADGE_TEXT_COLOR = "#FFFFFF";
 
 async function updateBadgeCount() {
-  const count = await getLostWorkCount();
+  // The badge is an alert channel: it counts deletions the user hasn't looked at
+  // yet (newLost), not the permanent deleted total. Viewing the deleted-works
+  // list acknowledges them, dropping newLost — and the badge — back to empty.
+  const { newLost, outageNotice } = await getStats();
   await actionApi?.setBadgeBackgroundColor?.({ color: BADGE_BG_COLOR });
   await actionApi?.setBadgeTextColor?.({ color: BADGE_TEXT_COLOR });
-  await actionApi?.setBadgeText?.({ text: count > 0 ? String(count) : "" });
+  await actionApi?.setBadgeText?.({ text: newLost > 0 ? String(newLost) : "" });
   await actionApi?.setTitle?.({
-    title: count > 0
-      ? `AO3 Find That Bookmark! — ${count} bookmarked work${count === 1 ? "" : "s"} may be deleted. Click to investigate.`
+    title: outageNotice && !outageNotice.resolved
+      ? "AO3 Find That Bookmark! — deletion alerts from the Oct 29 AO3 outage are false alarms. They'll clear on their own once AO3 is back."
+      : newLost > 0
+      ? `AO3 Find That Bookmark! — ${newLost} newly deleted bookmarked work${newLost === 1 ? "" : "s"}. Click to investigate.`
       : "AO3 Find That Bookmark!"
   });
-  return count;
+  return newLost;
 }
 
 async function getBookmarksUrl() {
@@ -337,13 +355,26 @@ const messageHandlers = {
     return { success: true };
   },
   [C.MSG.ENSURE_IMPORT]: async (message) => ensureImport(message.username),
+  [C.MSG.FIND_MISSING_ON_PAGE]: async ({ page } = {}) => {
+    const username = await getMeta(C.META.USERNAME);
+    if (!username) {
+      return { success: false, error: "Visit your AO3 bookmarks page once so the extension knows your username." };
+    }
+    return importManager.findMissingOnPage(username, page);
+  },
   [C.MSG.SNAPSHOT_BOOKMARKS]: async (message) => snapshotBookmarks(message),
   [C.MSG.GET_STATS]: async () => {
     await updateBadgeCount();
     return getStats();
   },
   [C.MSG.ACKNOWLEDGE_LOST]: async () => acknowledgeLostWorks(),
-  [C.MSG.GET_SETTINGS]: async () => getSettings()
+  [C.MSG.GET_SETTINGS]: async () => getSettings(),
+  [C.MSG.RECHECK_LOST]: async () => {
+    const result = await checkManager.reverifyLost();
+    if (result.success) await updateBadgeCount();
+    return result;
+  },
+  [C.MSG.DISMISS_OUTAGE_NOTICE]: async () => dismissOutageNotice()
 };
 
 runtime?.runtime?.onMessage?.addListener((message, sender, sendResponse) => {
@@ -368,6 +399,58 @@ runtime?.runtime?.onMessage?.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+// Local midnight, Oct 29 2026: deletions confirmed before this are trusted.
+const OUTAGE_2026_10_CUTOFF = new Date(2026, 9, 29).getTime();
+
+// Oct 2026 AO3 outage: older versions counted server errors and maintenance
+// pages as deletion strikes. On wake, count what the outage flagged. If there's
+// nothing, the repair is marked done silently; otherwise the popup shows an
+// informational notice until the user reads or dismisses it, and the repair
+// itself runs after the first clean check run (repairOutageOnceHealthy).
+async function prepareOutageNotice() {
+  if (await getMeta(C.META.REPAIR_OUTAGE_REVERIFY)) return;
+  if (await getMeta(C.META.OUTAGE_NOTICE)) return;
+  const { flagged, restored } = await checkManager.previewRequeue({ since: OUTAGE_2026_10_CUTOFF });
+  if (flagged + restored === 0) {
+    await setMeta(C.META.REPAIR_OUTAGE_REVERIFY, Date.now());
+    return;
+  }
+  await setMeta(C.META.OUTAGE_NOTICE, { flagged, restored, resolved: false, dismissed: false });
+}
+
+// Once AO3 answers normally again: re-verify everything flagged from the cutoff
+// on, restore earlier deletions a v1.4.1 blanket re-check had reset, and clear
+// the flagged works' notifications.
+async function repairOutageOnceHealthy() {
+  if (await getMeta(C.META.REPAIR_OUTAGE_REVERIFY)) return;
+  const result = await checkManager.reverifyLost({ since: OUTAGE_2026_10_CUTOFF });
+  if (!result.success) return;
+
+  if (result.restored > 0) {
+    // Restored works are old news; don't re-alert on them.
+    const acknowledged = Number(await getMeta(C.META.LOST_ACKNOWLEDGED)) || 0;
+    await setMeta(C.META.LOST_ACKNOWLEDGED, acknowledged + result.restored);
+  }
+  for (const workId of result.flaggedIds) {
+    notificationsApi?.clear?.(`ao3-lost-and-found-${C.STATUS.DELETED}-${workId}`);
+  }
+
+  await setMeta(C.META.REPAIR_OUTAGE_REVERIFY, Date.now());
+  const notice = await getMeta(C.META.OUTAGE_NOTICE);
+  if (notice) {
+    await setMeta(C.META.OUTAGE_NOTICE, { ...notice, resolved: true, cleared: result.flaggedIds.length, restored: result.restored });
+  }
+  await updateBadgeCount();
+  broadcast({ type: C.MSG.STATS_UPDATED, stats: await getStats() });
+}
+
+async function dismissOutageNotice() {
+  const notice = await getMeta(C.META.OUTAGE_NOTICE);
+  if (notice) await setMeta(C.META.OUTAGE_NOTICE, { ...notice, dismissed: true });
+  await updateBadgeCount();
+  return { success: true };
+}
+
 async function runScheduledMaintenance(alarm) {
   // Resume any import an eviction left unfinished before anything else.
   await reconcileImport();
@@ -377,10 +460,11 @@ async function runScheduledMaintenance(alarm) {
   const username = await getMeta(C.META.USERNAME);
   const status = await getMeta(C.META.IMPORT_STATUS);
   if (username && status === C.IMPORT_STATE.COMPLETE) {
-    try {
-      await importManager.syncRecent(username);
-    } catch (error) {
-      console.error("AO3 Lost and Found incremental sweep failed.", error);
+    const result = await importManager.syncRecent(username);
+    if (result?.transient) {
+      console.info("AO3 Lost and Found incremental sweep skipped transiently.", result.error || result.skipped);
+    } else if (result && result.success === false && !result.skipped && !result.paused) {
+      console.warn("AO3 Lost and Found incremental sweep did not complete.", result.error || result);
     }
   }
 
@@ -388,7 +472,11 @@ async function runScheduledMaintenance(alarm) {
   const settings = await getSettings();
   const total = await db.works.count();
   const batchSize = globalThis.AO3LostAndFoundCheck.computeBatchSize(total, settings.checkFrequencyMinutes);
-  await checkManager.runBatch({ manual: false, alarm, batchSize });
+  const result = await checkManager.runBatch({ manual: false, alarm, batchSize });
+  // A clean run means AO3 is answering normally again.
+  if (result?.success) {
+    await repairOutageOnceHealthy();
+  }
 }
 
 alarmApi?.onAlarm?.addListener((alarm) => {
@@ -401,6 +489,7 @@ alarmApi?.onAlarm?.addListener((alarm) => {
 
 actionApi?.setBadgeBackgroundColor?.({ color: BADGE_BG_COLOR });
 getSettings().then(applySettings).catch(console.error);
+prepareOutageNotice().catch(console.error);
 // Recover an import interrupted by a previous worker eviction.
 reconcileImport().catch(console.error);
 

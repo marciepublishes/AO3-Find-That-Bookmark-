@@ -6,6 +6,7 @@ const {
   getDashboardLinkStatus,
   getLostFoundFilter,
   reconstructBlurb,
+  shouldRenderLostFoundView,
   updateDashboardCounts,
   waybackUrl
 } = require("../modules/injection-manager");
@@ -65,6 +66,12 @@ describe("InjectionManager", () => {
     expect(blurb.innerHTML).toContain("https://web.archive.org/web/*/archiveofourown.org/works/123456");
   });
 
+  test("filtered-view blurbs omit the obsolete return-to-bookmarks control", () => {
+    const blurb = reconstructBlurb(deletedWork, fakeDocument(), { showReturnButton: false });
+    expect(blurb.innerHTML).not.toContain("Return to original position");
+    expect(blurb.innerHTML).toContain("Search Wayback Machine");
+  });
+
   test("waybackUrl builds the required archive search URL", () => {
     expect(waybackUrl("987654")).toBe("https://web.archive.org/web/*/archiveofourown.org/works/987654");
   });
@@ -119,6 +126,12 @@ describe("InjectionManager", () => {
     expect(getLostFoundFilter({ search: "?ao3_lost_found=deleted" })).toBe("deleted");
     expect(getLostFoundFilter({ search: "?ao3_lost_found=orphaned" })).toBe(null);
     expect(getLostFoundFilter({ search: "?bookmark_search=Deleted%20Work" })).toBe(null);
+  });
+
+  test("ordinary AO3 bookmark pages never qualify for reconstructed deleted blurbs", () => {
+    expect(shouldRenderLostFoundView({ search: "" })).toBe(false);
+    expect(shouldRenderLostFoundView({ search: "?page=2" })).toBe(false);
+    expect(shouldRenderLostFoundView({ search: "?ao3_lost_found=deleted" })).toBe(true);
   });
 
   test("formatFilteredHeading describes local deleted work results", () => {
