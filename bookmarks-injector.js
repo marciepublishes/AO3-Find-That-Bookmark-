@@ -50,29 +50,6 @@
       .catch(() => {});
   }
 
-  function getRenderedWorkEntries(documentRoot = document) {
-    return injection.getRenderedWorkEntries(documentRoot, location);
-  }
-
-  function getRenderedWorkIds(documentRoot = document) {
-    return getRenderedWorkEntries(documentRoot).map((entry) => entry.workId);
-  }
-
-  async function requestMissingWorks(workIds, pageNumber, pageSize) {
-    if (!runtime?.runtime?.sendMessage) {
-      return [];
-    }
-
-    const response = await runtime.runtime.sendMessage({
-      type: C.MSG.GET_DELETED_WORKS,
-      workIds,
-      pageNumber,
-      pageSize
-    });
-
-    return response?.works || [];
-  }
-
   async function requestFilteredWorks(status, pageNumber, pageSize) {
     if (!runtime?.runtime?.sendMessage) {
       return { works: [], total: 0, pageNumber, pageSize };
@@ -86,18 +63,6 @@
     });
 
     return response || { works: [], total: 0, pageNumber, pageSize };
-  }
-
-  async function setPinnedTop(workId, value) {
-    const response = await runtime.runtime.sendMessage({
-      type: C.MSG.SET_PINNED_TOP,
-      workId,
-      value
-    });
-
-    if (!response?.success) {
-      throw new Error(response?.error || "Unable to update pinned state.");
-    }
   }
 
   async function getSettings() {
@@ -170,23 +135,6 @@
     await renderFilteredLostWorks(list, status, settings);
   }
 
-  function attachReturnHandler(blurb, work, list, renderedEntries) {
-    const button = blurb.querySelector(".ao3-lost-found__return");
-    button?.addEventListener("click", async () => {
-      button.disabled = true;
-      try {
-        await setPinnedTop(work.workId, false);
-        const movedWork = { ...work, pinnedToTop: false };
-        blurb.remove();
-        injection.placeBlurb(list, blurb, movedWork, renderedEntries);
-      } catch (error) {
-        console.warn("AO3 Lost and Found could not move this work.", error);
-      } finally {
-        button.disabled = false;
-      }
-    });
-  }
-
   async function renderFilteredLostWorks(list, status, settings) {
     const pageNumber = injection.getPageNumber(location);
     const pageSize = 20;
@@ -195,7 +143,7 @@
 
     list.innerHTML = "";
     works.forEach((work) => {
-      const blurb = injection.reconstructBlurb(work, document, { showReturnButton: false });
+      const blurb = injection.reconstructBlurb(work, document);
       list.append(blurb);
     });
 
@@ -301,16 +249,12 @@
     isOwnBookmarks,
     maybeStartAutoImport,
     snapshotVisibleBookmarks,
-    getRenderedWorkEntries,
-    getRenderedWorkIds,
     requestFilteredWorks,
-    requestMissingWorks,
     renderFilteredLostWorks,
     switchToLostFoundFilter,
     ensureDashboardSection,
     attachDashboardLinkInterceptor,
     getSettings,
-    getStats,
-    setPinnedTop
+    getStats
   };
 })();

@@ -1,6 +1,6 @@
 {
   "name": "ao3-lost-and-found",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "private": true,
   "description": "Checks your own AO3 bookmarks and flags which have been deleted, so you can see what's gone instead of wondering. Runs entirely on your device; it does not copy, store, or re-host works and cannot recover deleted content.",
   "scripts": {

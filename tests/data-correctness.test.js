@@ -130,3 +130,23 @@ describe("positions always assume 20 bookmarks per page", () => {
     expect(db.rows.get("102").originalPosition).toBe(21);
   });
 });
+
+describe("rate-limit pauses", () => {
+  test("an import paused by repeated 429s announces it once, with the message", async () => {
+    const emit = jest.fn();
+    const manager = new ImportManager({
+      bus: { emit },
+      db: memoryDb(),
+      delayFn: async () => {},
+      backoffDelayFn: async () => {},
+      fetchFn: async () => ({ ok: false, status: 429, text: async () => "" })
+    });
+
+    await manager.start({ username: "marcie" });
+    await manager.currentRun;
+
+    const paused = emit.mock.calls.filter(([type]) => type === "import:paused");
+    expect(paused).toHaveLength(1);
+    expect(paused[0][1]).toMatchObject({ reason: "rate-limit", message: expect.stringContaining("rate-limit") });
+  });
+});

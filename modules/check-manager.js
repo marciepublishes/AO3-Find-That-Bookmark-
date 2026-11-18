@@ -410,7 +410,7 @@ class CheckManager {
     await this.backoffDelayFn(computeBackoff(this.consecutive429s));
 
     if (this.consecutive429s >= 3) {
-      await this.setMeta(META.CHECK_PAUSED, true);
+      // Ends this run only; the next scheduled run tries again.
       await this.bus?.emit?.(EVENTS.CHECKS_PAUSED, {
         reason: "rate-limit",
         message: "Checking paused after repeated AO3 rate-limit responses. Please try again later."

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AO3 Find That Bookmark! (Deleted Works)",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "description": "Tracks AO3 bookmarks locally and shows which bookmarked works have been deleted in a private, separate view.",
   "permissions": [
     "alarms",

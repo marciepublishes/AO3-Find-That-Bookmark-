@@ -90,11 +90,11 @@ class ImportManager {
     return { success: true, status: IMPORT_STATE.RUNNING };
   }
 
-  async pause(reason = "manual") {
+  async pause(reason = "manual", message) {
     this.pauseRequested = true;
     await this.setMeta(META.IMPORT_PAUSED, true);
     await this.setMeta(META.IMPORT_STATUS, IMPORT_STATE.PAUSED);
-    await this.bus?.emit?.(EVENTS.IMPORT_PAUSED, { reason });
+    await this.bus?.emit?.(EVENTS.IMPORT_PAUSED, message ? { reason, message } : { reason });
     return { success: true };
   }
 
@@ -400,11 +400,8 @@ class ImportManager {
     await this.backoffDelayFn(computeBackoff(this.consecutive429s));
 
     if (this.consecutive429s >= 3) {
-      await this.pause(reason);
-      await this.bus?.emit?.(EVENTS.IMPORT_PAUSED, {
-        reason,
-        message: "Import paused after repeated AO3 rate-limit responses. Please resume later."
-      });
+      // pause() announces it; one event, carrying the message.
+      await this.pause(reason, "Import paused after repeated AO3 rate-limit responses. Please resume later.");
       return true;
     }
     return false;

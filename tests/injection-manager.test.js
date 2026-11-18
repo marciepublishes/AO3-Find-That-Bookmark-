@@ -1,5 +1,4 @@
 const {
-  buildBookmarkTagUrl,
   buildLostFoundFilterUrl,
   formatFilteredHeading,
   formatDashboardLabel,
@@ -7,7 +6,6 @@ const {
   getLostFoundFilter,
   reconstructBlurb,
   shouldRenderLostFoundView,
-  updateDashboardCounts,
   waybackUrl
 } = require("../modules/injection-manager");
 
@@ -62,12 +60,11 @@ describe("InjectionManager", () => {
     expect(blurb.innerHTML).toContain("Deleted Work");
     expect(blurb.innerHTML).toContain("Deleted");
     expect(blurb.innerHTML).toContain("Search Wayback Machine");
-    expect(blurb.innerHTML).toContain("Return to original position");
     expect(blurb.innerHTML).toContain("https://web.archive.org/web/*/archiveofourown.org/works/123456");
   });
 
-  test("filtered-view blurbs omit the obsolete return-to-bookmarks control", () => {
-    const blurb = reconstructBlurb(deletedWork, fakeDocument(), { showReturnButton: false });
+  test("blurbs no longer carry the retired return-to-position control", () => {
+    const blurb = reconstructBlurb(deletedWork, fakeDocument());
     expect(blurb.innerHTML).not.toContain("Return to original position");
     expect(blurb.innerHTML).toContain("Search Wayback Machine");
   });
@@ -76,15 +73,9 @@ describe("InjectionManager", () => {
     expect(waybackUrl("987654")).toBe("https://web.archive.org/web/*/archiveofourown.org/works/987654");
   });
 
-  test("buildBookmarkTagUrl filters the current user's bookmark page by status tag", () => {
-    expect(buildBookmarkTagUrl("Deleted Work", {
-      pathname: "/users/marcie_writes_garbage/bookmarks"
-    })).toBe("/users/marcie_writes_garbage/bookmarks?ao3_lost_found=deleted");
-  });
-
   test("Lost and Found sidebar URLs never use AO3 native bookmark search", () => {
     const location = { pathname: "/users/marcie_writes_garbage/bookmarks" };
-    const deletedUrl = buildBookmarkTagUrl("Deleted Work", location);
+    const deletedUrl = buildLostFoundFilterUrl("deleted", location);
 
     expect(deletedUrl).toBe("/users/marcie_writes_garbage/bookmarks?ao3_lost_found=deleted");
     expect(deletedUrl).not.toContain("bookmark_search");
@@ -108,18 +99,6 @@ describe("InjectionManager", () => {
   test("formatDashboardLabel mirrors AO3 sidebar counts", () => {
     expect(formatDashboardLabel("Deleted", 3)).toBe("Deleted (3)");
     expect(formatDashboardLabel("Deleted")).toBe("Deleted (0)");
-  });
-
-  test("updateDashboardCounts rewrites the Deleted link without data markers", () => {
-    const deletedLink = { textContent: "Deleted", dataset: {} };
-    const dashboard = {
-      querySelector: () => null,
-      querySelectorAll: () => [deletedLink]
-    };
-
-    updateDashboardCounts(dashboard, { deleted: 2 });
-
-    expect(deletedLink.textContent).toBe("Deleted (2)");
   });
 
   test("getLostFoundFilter reads the extension-owned deleted filter param", () => {

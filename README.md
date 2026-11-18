@@ -8,7 +8,8 @@ Every so often it checks whether those works are still up. If one has been delet
 
 - Reads your own AO3 bookmarks while you're logged in, and keeps a local copy of the details AO3 already shows there.
 - Checks, a little at a time, whether each bookmarked work is still up.
-- Flags works that have been deleted, and shows their saved details back on your bookmarks page so you can see which ones went missing.
+- Flags works that have been deleted, and shows their saved details in a separate Deleted view on your bookmarks page so you can see which ones went missing.
+- Keeps a work's record even after you un-bookmark it, so its details are never lost.
 - Adds a Deleted entry to your bookmarks sidebar so you can filter to just those works.
 - Links out to the Wayback Machine in case you want to look for an archived copy.
 

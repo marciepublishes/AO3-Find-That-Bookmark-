@@ -1,6 +1,6 @@
 # Privacy Policy for AO3 Find That Bookmark!
 
-Last updated: June 28, 2026
+Last updated: November 18, 2026
 
 AO3 Find That Bookmark! is a browser extension that helps users identify deleted works from their own Archive of Our Own bookmarks. The extension operates locally and does not use developer-operated servers.
 
@@ -18,7 +18,7 @@ The extension uses your browser's existing AO3 session when requesting your own 
 
 ## How Information Is Used
 
-Information is used only to provide the extension's bookmark tracking, deletion detection, notification, backup, and restore features.
+Information is used only to provide the extension's bookmark tracking, deletion detection, notification, and deleted-work display features.
 
 ## Storage and Retention
 

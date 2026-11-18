@@ -164,30 +164,6 @@ async function fireLostWorkNotification(work) {
   });
 }
 
-async function getDeletedWorksForPage({ workIds = [], pageNumber = 1, pageSize = 20 }) {
-  const idSet = new Set(Array.isArray(workIds) ? workIds.map(String) : []);
-  const page = Math.max(1, Number(pageNumber) || 1);
-  const size = Math.max(1, Number(pageSize) || 20);
-  const firstPosition = (page - 1) * size + 1;
-  const lastPosition = page * size;
-
-  const deleted = await db.works.where("status").equals(C.STATUS.DELETED).toArray();
-
-  return deleted
-    .filter((work) => {
-      if (idSet.has(String(work.workId))) return true;
-      if (work.pinnedToTop) return true;
-      const position = Number(work.originalPosition) || 0;
-      return position >= firstPosition && position <= lastPosition;
-    })
-    .sort((left, right) => {
-      if (left.pinnedToTop !== right.pinnedToTop) {
-        return left.pinnedToTop ? -1 : 1;
-      }
-      return (Number(left.originalPosition) || 0) - (Number(right.originalPosition) || 0);
-    });
-}
-
 async function getLostWorksByStatus({ status, pageNumber = 1, pageSize = 20 }) {
   if (status !== C.STATUS.DELETED) {
     return { works: [], total: 0, pageNumber: 1, pageSize: Number(pageSize) || 20 };
@@ -347,16 +323,7 @@ eventBus.on(C.EVENTS.CHECKS_PAUSED, ({ message }) => {
 });
 
 const messageHandlers = {
-  [C.MSG.GET_DELETED_WORKS]: async (message) => ({ works: await getDeletedWorksForPage(message) }),
   [C.MSG.GET_LOST_WORKS_FILTER]: async (message) => getLostWorksByStatus(message),
-  [C.MSG.SET_PINNED_TOP]: async ({ workId, value }) => {
-    if (!workId || typeof value !== "boolean") {
-      return { success: false, error: "workId and boolean value are required." };
-    }
-
-    await db.works.update(String(workId), { pinnedToTop: value });
-    return { success: true };
-  },
   [C.MSG.ENSURE_IMPORT]: async (message) => ensureImport(message.username),
   [C.MSG.FIND_MISSING_ON_PAGE]: async ({ page } = {}) => {
     const username = await getMeta(C.META.USERNAME);

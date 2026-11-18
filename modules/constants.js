@@ -16,9 +16,7 @@ const AO3LostAndFoundConstants = {
   // runtime.sendMessage message types.
   MSG: {
     // Requests (content script / popup -> background).
-    GET_DELETED_WORKS: "GET_DELETED_WORKS",
     GET_LOST_WORKS_FILTER: "GET_LOST_WORKS_FILTER",
-    SET_PINNED_TOP: "SET_PINNED_TOP",
     ENSURE_IMPORT: "ENSURE_IMPORT",
     FIND_MISSING_ON_PAGE: "FIND_MISSING_ON_PAGE",
     SNAPSHOT_BOOKMARKS: "SNAPSHOT_BOOKMARKS",
@@ -51,7 +49,6 @@ const AO3LostAndFoundConstants = {
     CHECK_QUEUE: "check:queue",
     CHECK_PENDING: "check:pending",
     CHECK_LAST_RUN: "check:lastRun",
-    CHECK_PAUSED: "check:paused",
     // Last work that answered 200; HEAD-checked as a canary before a 404 is
     // allowed to count, so a site-wide outage is never read as a deletion.
     CHECK_CANARY: "check:canary",

@@ -14,7 +14,7 @@ const Constants = globalThis.AO3LostAndFoundConstants
   || (typeof require === "function" ? require("./constants") : {});
 const { STATUS } = Constants;
 
-function reconstructBlurb(work, documentRef = globalThis.document, { showReturnButton = true } = {}) {
+function reconstructBlurb(work, documentRef = globalThis.document) {
   const item = documentRef.createElement("li");
   const detectedAt = work.deletedAt;
 
@@ -58,7 +58,6 @@ function reconstructBlurb(work, documentRef = globalThis.document, { showReturnB
     </div>
     <p class="ao3-lost-found__actions">
       <a class="ao3-lost-found__wayback" href="${waybackUrl(work.workId)}" target="_blank" rel="noreferrer">Search Wayback Machine</a>
-      ${showReturnButton ? '<button class="ao3-lost-found__return" type="button">Return to original position</button>' : ""}
     </p>
   `;
 
@@ -126,19 +125,6 @@ function injectStyles(documentRef = globalThis.document, settings = {}) {
       color: #41653E;
       font-weight: 600;
     }
-    .ao3-lost-found__return {
-      border: none;
-      border-radius: 4px;
-      padding: 0.25em 0.7em;
-      background: #41653E;
-      color: #A8BBA9;
-      cursor: pointer;
-      font: inherit;
-      font-weight: 600;
-    }
-    .ao3-lost-found__return:hover {
-      opacity: 0.85;
-    }
   `;
   documentRef.head.append(style);
 }
@@ -200,24 +186,8 @@ function createDashboardItem(documentRef, status, label, count, locationRef) {
   return item;
 }
 
-function updateDashboardCounts(dashboard, counts = {}) {
-  const links = [...dashboard.querySelectorAll("a")];
-  const deletedLink = dashboard.querySelector("[data-ao3-lost-found-count='deleted']")
-    || links.find((link) => getDashboardLinkStatus(link.textContent) === STATUS.DELETED);
-
-  if (deletedLink) {
-    deletedLink.dataset.ao3LostFoundCount = STATUS.DELETED;
-    deletedLink.textContent = formatDashboardLabel("Deleted", counts.deleted);
-  }
-}
-
 function formatDashboardLabel(label, count) {
   return `${label} (${Number(count) || 0})`;
-}
-
-function buildBookmarkTagUrl(tagName, locationRef = globalThis.location) {
-  const status = getDashboardLinkStatus(tagName) || STATUS.DELETED;
-  return buildLostFoundFilterUrl(status, locationRef);
 }
 
 function buildLostFoundFilterUrl(status, locationRef = globalThis.location) {
@@ -385,21 +355,6 @@ function getUsernameFromPath(locationRef = globalThis.location) {
   return match ? decodeURIComponent(match[1]) : "";
 }
 
-function placeBlurb(list, blurb, work, renderedPositions = []) {
-  if (work.pinnedToTop) {
-    list.prepend(blurb);
-    return;
-  }
-
-  const originalPosition = Number(work.originalPosition) || 0;
-  const beforeElement = renderedPositions.find((entry) => entry.position >= originalPosition)?.element || null;
-  if (beforeElement) {
-    list.insertBefore(blurb, beforeElement);
-  } else {
-    list.append(blurb);
-  }
-}
-
 function getBookmarksList(documentRef = globalThis.document) {
   return documentRef.querySelector("ol.bookmark.index.group, ol.work.index.group, ol.index.group, ul.bookmark.index.group, ul.work.index.group");
 }
@@ -407,10 +362,6 @@ function getBookmarksList(documentRef = globalThis.document) {
 function getPageNumber(locationRef = globalThis.location) {
   const params = new URLSearchParams(locationRef.search || "");
   return Number(params.get("page")) || 1;
-}
-
-function getPageSize(renderedCount) {
-  return renderedCount > 0 ? renderedCount : 20;
 }
 
 // 1-based position in the whole bookmark list of the blurb at `index` on
@@ -496,7 +447,6 @@ function sanitizeColor(value, fallback) {
 }
 
 globalThis.AO3LostAndFoundInjection = {
-  buildBookmarkTagUrl,
   buildLostFoundFilterUrl,
   enableBookmarksReturnLink,
   formatFilteredHeading,
@@ -505,7 +455,6 @@ globalThis.AO3LostAndFoundInjection = {
   getDashboardLinkStatus,
   getLostFoundFilter,
   getPageNumber,
-  getPageSize,
   getRenderedWorkEntries,
   getLoggedInUsername,
   getUsernameFromPath,
@@ -515,11 +464,9 @@ globalThis.AO3LostAndFoundInjection = {
   workIdFromBlurb,
   injectDashboardSection,
   injectStyles,
-  placeBlurb,
   positionOnPage,
   reconstructBlurb,
   shouldRenderLostFoundView,
-  updateDashboardCounts,
   updateFilteredHeading,
   waybackUrl
 };
