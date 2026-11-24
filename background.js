@@ -198,8 +198,20 @@ async function getSettings() {
 async function applySettings(settings) {
   importManager.pageDelayRange = [settings.importDelayMin, settings.importDelayMax];
   checkManager.requestDelayRange = [settings.checkDelayMin, settings.checkDelayMax];
-  await scheduleNextCheck(settings);
+  await ensureCheckScheduled(settings);
   await updateBadgeCount();
+}
+
+// Runs on every worker start. The worker restarts often (opening the popup,
+// visiting AO3 profile/bookmark pages), so it must keep a check that's already
+// scheduled: re-creating the alarm each time replaced it, pushing the next
+// check back indefinitely for anyone who kept looking.
+async function ensureCheckScheduled(settings) {
+  if (settings.autoCheckEnabled) {
+    const existing = await alarmApi?.get?.(C.ALARM_CHECK);
+    if (existing) return;
+  }
+  await scheduleNextCheck(settings);
 }
 
 // Schedule the next check as a one-shot alarm with ±25% jitter around the
@@ -344,7 +356,17 @@ const messageHandlers = {
   [C.MSG.RECHECK_LOST]: async () => {
     // Queue-only: deleted works stay deleted (no re-alerts) unless they load.
     const result = await checkManager.queueRecheck();
-    if (result.success) await updateBadgeCount();
+    if (result.success) {
+      await updateBadgeCount();
+      // Start checking now rather than at the next scheduled run, but only the
+      // queued works (no extra routine checks); anything over one run's size
+      // continues in the scheduled runs. Not awaited, so the popup gets its
+      // answer straight away.
+      if (result.reverifying > 0) {
+        const queued = (await checkManager.getPending()).length;
+        runCheckBatch({ maxChecks: queued }).catch(console.error);
+      }
+    }
     return result;
   },
   [C.MSG.DISMISS_OUTAGE_NOTICE]: async () => dismissOutageNotice()
@@ -455,15 +477,23 @@ async function runScheduledMaintenance(alarm) {
     }
   }
 
-  // Size each run so a full pass over the library finishes in ~a day.
-  const settings = await getSettings();
-  const total = await db.works.count();
-  const batchSize = globalThis.AO3LostAndFoundCheck.computeBatchSize(total, settings.checkFrequencyMinutes);
-  const result = await checkManager.runBatch({ manual: false, alarm, batchSize });
+  const result = await runCheckBatch({ alarm });
   // A clean run means AO3 is answering normally again.
   if (result?.success) {
     await repairOutageOnceHealthy();
   }
+}
+
+// One check run, sized so a full pass over the library finishes in ~a day.
+// Used by the schedule and to start a user's re-check right away (with
+// `maxChecks` capping it lower); runBatch refuses to overlap a run already in
+// progress.
+async function runCheckBatch({ alarm, maxChecks } = {}) {
+  const settings = await getSettings();
+  const total = await db.works.count();
+  let batchSize = globalThis.AO3LostAndFoundCheck.computeBatchSize(total, settings.checkFrequencyMinutes);
+  if (Number(maxChecks) > 0) batchSize = Math.min(batchSize, Number(maxChecks));
+  return checkManager.runBatch({ manual: false, alarm, batchSize });
 }
 
 alarmApi?.onAlarm?.addListener((alarm) => {
