@@ -150,3 +150,81 @@ describe("rate-limit pauses", () => {
     expect(paused[0][1]).toMatchObject({ reason: "rate-limit", message: expect.stringContaining("rate-limit") });
   });
 });
+
+describe("pages without trackable works don't end the import early", () => {
+  const login = '<div id="greeting"><a href="/logout">Log Out</a></div>';
+  const series = (id) => `<li class="bookmark blurb" id="bookmark_${id}"><h4 class="heading"><a href="/series/${id}">Series</a></h4></li>`;
+  const work = (id) => `<li class="bookmark blurb" id="bookmark_${id}0"><h4 class="heading"><a href="/works/${id}">Work ${id}</a></h4></li>`;
+  const pager = '<ol class="pagination actions"><li><a href="?page=2">2</a></li></ol>';
+  const importerFor = (db, pages, urls = []) => new ImportManager({
+    bus: null,
+    db,
+    delayFn: async () => {},
+    fetchFn: async (url) => {
+      urls.push(url);
+      const page = Number(new URL(url).searchParams.get("page"));
+      return { ok: true, status: 200, text: async () => pages[page] || login };
+    }
+  });
+
+  test("a series-only page 1 doesn't stop the full import before page 2", async () => {
+    const db = memoryDb();
+    const urls = [];
+    const importer = importerFor(db, { 1: login + series(7) + pager, 2: login + work(9) + pager }, urls);
+
+    await importer.start({ username: "marcie" });
+    await importer.currentRun;
+
+    expect(urls).toHaveLength(2);
+    expect(db.rows.has("9")).toBe(true);
+    expect(db.meta && (await db.meta.get("import:status")).value).toBe("complete");
+  });
+
+  test("a genuinely empty account completes after one request", async () => {
+    const db = memoryDb();
+    const urls = [];
+    const importer = importerFor(db, { 1: login }, urls);
+
+    await importer.start({ username: "marcie" });
+    await importer.currentRun;
+
+    expect(urls).toHaveLength(1);
+    expect((await db.meta.get("import:status")).value).toBe("complete");
+  });
+
+  test("the recent-bookmarks sweep looks past a series-only page", async () => {
+    const db = memoryDb([{ workId: "300", status: "active", originalPosition: 30 }]);
+    const importer = importerFor(db, { 1: login + series(7) + pager, 2: login + work(201) + work(300) });
+
+    const result = await importer.syncRecent("marcie");
+
+    expect(result.success).toBe(true);
+    expect(db.rows.has("201")).toBe(true);
+  });
+});
+
+describe("a failed start never leaves the importer stuck as running", () => {
+  test("a database error while starting is reported, and a later start works", async () => {
+    const db = memoryDb();
+    const realPut = db.meta.put;
+    let failNext = true;
+    db.meta.put = async (row) => {
+      if (failNext) { failNext = false; throw new Error("temporary db failure"); }
+      return realPut(row);
+    };
+    const importer = new ImportManager({
+      bus: null,
+      db,
+      delayFn: async () => {},
+      fetchFn: async () => ({ ok: true, status: 200, text: async () => '<div id="user-menu"></div>' })
+    });
+
+    const first = await importer.start({ username: "marcie" });
+    expect(first).toMatchObject({ success: false, error: "temporary db failure" });
+    expect(importer.running).toBe(false);
+
+    const second = await importer.start({ username: "marcie" });
+    expect(second.success).toBe(true);
+    await importer.currentRun;
+  });
+});

@@ -113,13 +113,31 @@
       const status = injection.getDashboardLinkStatus(link.textContent);
       if (!status) return;
 
+      // Switch in place only on the bookmarks list itself, and only for a
+      // plain left click. Anywhere else (profile, works, gifts) the link
+      // navigates normally; Ctrl/Cmd/Shift/middle-click keep the browser's
+      // own new-tab/window behaviour.
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      if (!isBookmarksListPage()) return;
+
       event.preventDefault();
       await switchToLostFoundFilter(status);
     });
   }
 
+  function isBookmarksListPage() {
+    return /^\/users\/[^/]+\/bookmarks(?:\/|$)/.test(location.pathname)
+      && Boolean(injection.getBookmarksList(document));
+  }
+
   async function switchToLostFoundFilter(status) {
     const nextUrl = injection.buildLostFoundFilterUrl(status, location);
+    // Swapping the view in place only works on the bookmarks list; anywhere
+    // else, go to the Deleted view with a normal page load.
+    if (!isBookmarksListPage()) {
+      location.assign(nextUrl);
+      return;
+    }
     history.pushState({ ao3LostFound: status }, "", nextUrl);
 
     // The URL changed without a page load, so rebuild our dashboard item now.

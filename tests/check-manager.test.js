@@ -644,3 +644,28 @@ describe("re-check status survives closing the popup", () => {
     expect(db._meta.get("check:recheck")).toBeNull();
   });
 });
+
+describe("a failed start never leaves the checker stuck as running", () => {
+  test("a database error while setting up a run is reported, and the next run works", async () => {
+    const db = makeDb([{ workId: "1", status: "active", checkFailCount: 0, dateBookmarked: "2026-05-01", authors: [] }]);
+    const realGet = db.meta.get;
+    let failNext = true;
+    db.meta.get = async (key) => {
+      if (failNext) { failNext = false; throw new Error("temporary db failure"); }
+      return realGet(key);
+    };
+    const manager = new CheckManager({
+      bus: { emit: async () => {} },
+      db,
+      delayFn: async () => {},
+      backoffDelayFn: async () => {},
+      fetchFn: async (url) => ({ status: 200, url })
+    });
+
+    const first = await manager.runBatch({ batchSize: 1 });
+    expect(first).toMatchObject({ success: false, error: "temporary db failure" });
+    expect(manager.running).toBe(false);
+
+    expect((await manager.runBatch({ batchSize: 1 })).success).toBe(true);
+  });
+});

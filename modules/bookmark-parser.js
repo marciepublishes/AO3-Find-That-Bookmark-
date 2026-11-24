@@ -140,6 +140,10 @@
     return {
       works,
       deleted,
+      // Every bookmark entry on the page, including series/external ones that
+      // have no work to track. Zero means the listing has really ended; zero
+      // *works* alone does not.
+      entryCount: blurbs.length,
       estimatedTotalPages: getEstimatedTotalPagesFromHtml(html, pageNumber)
     };
   }

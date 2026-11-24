@@ -68,20 +68,31 @@ class ImportManager {
     this.pauseRequested = false;
     this.consecutive429s = 0;
 
-    await this.setMeta(META.USERNAME, normalizedUsername);
-    if (!resume) {
-      await this.setMeta(META.LAST_COMPLETED_PAGE, 0);
-      await this.setMeta(META.RECORDS_IMPORTED, 0);
-      await this.setMeta(META.ESTIMATED_TOTAL_PAGES, null);
+    // If setup fails (e.g. a database error), release the guard; otherwise
+    // every later import would be refused as "already running".
+    try {
+      await this.setMeta(META.USERNAME, normalizedUsername);
+      if (!resume) {
+        await this.setMeta(META.LAST_COMPLETED_PAGE, 0);
+        await this.setMeta(META.RECORDS_IMPORTED, 0);
+        await this.setMeta(META.ESTIMATED_TOTAL_PAGES, null);
+      }
+      await this.setMeta(META.IMPORT_PAUSED, false);
+      await this.setMeta(META.IMPORT_STATUS, IMPORT_STATE.RUNNING);
+    } catch (error) {
+      this.running = false;
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
-    await this.setMeta(META.IMPORT_PAUSED, false);
-    await this.setMeta(META.IMPORT_STATUS, IMPORT_STATE.RUNNING);
 
     this.currentRun = this.run(normalizedUsername)
       .catch(async (error) => {
         const message = error instanceof Error ? error.message : String(error);
-        await this.setMeta(META.IMPORT_STATUS, IMPORT_STATE.ERROR);
-        await this.bus?.emit?.(EVENTS.IMPORT_ERROR, { message });
+        try {
+          await this.setMeta(META.IMPORT_STATUS, IMPORT_STATE.ERROR);
+          await this.bus?.emit?.(EVENTS.IMPORT_ERROR, { message });
+        } catch (reportError) {
+          // Couldn't record the failure; the finally below still frees the guard.
+        }
       })
       .finally(() => {
         this.running = false;
@@ -193,7 +204,9 @@ class ImportManager {
         pageNumber: page,
         originalPositionOffset: (page - 1) * BOOKMARKS_PER_PAGE
       });
-      if (parsed.works.length === 0) break;
+      // An empty page ends the sweep; a page of only series/external
+      // bookmarks doesn't (newer works may sit on the next page).
+      if (parsed.entryCount === 0) break;
 
       const existing = await this.db.works.bulkGet(parsed.works.map((work) => work.workId));
       const reachedKnown = existing.some(Boolean);
@@ -367,7 +380,9 @@ class ImportManager {
       const progress = buildProgress(currentPage, estimatedTotalPages);
       await this.bus?.emit?.(EVENTS.IMPORT_PROGRESS, progress);
 
-      if (currentPage >= estimatedTotalPages || parsedPage.works.length === 0) {
+      // Done on the last page, or on a page with no bookmark entries at all.
+      // A page of only series/external bookmarks is not the end.
+      if (currentPage >= estimatedTotalPages || parsedPage.entryCount === 0) {
         await this.setMeta(META.IMPORT_STATUS, IMPORT_STATE.COMPLETE);
         await this.setMeta(META.IMPORT_PAUSED, false);
         await this.bus?.emit?.(EVENTS.IMPORT_COMPLETE, progress);

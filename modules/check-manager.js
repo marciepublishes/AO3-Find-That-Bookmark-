@@ -66,14 +66,19 @@ class CheckManager {
     // the 3-strike confirmation completes within a few runs instead of a few
     // full passes). `seen` ensures a work is checked at most once per run, so
     // strikes stay spaced by the run interval.
-    let pending = await this.getPending();
-    let queue = await this.getQueue();
-    if (queue.length === 0) {
-      queue = await this.rebuildQueue();
-    }
+    let pending = [];
+    let queue = [];
     const seen = new Set();
 
     try {
+      // Setup is inside the try so a database error here still releases
+      // `running` (finally) instead of blocking every later run.
+      pending = await this.getPending();
+      queue = await this.getQueue();
+      if (queue.length === 0) {
+        queue = await this.rebuildQueue();
+      }
+
       // Lane 1: confirmation fast-lane (snapshot so mutating `pending` is safe).
       const fastLane = [...pending];
       while (fastLane.length > 0 && processed < limit) {
@@ -139,7 +144,11 @@ class CheckManager {
       return { success: true, processed };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await this.bus?.emit?.(EVENTS.CHECKS_ERROR, { message });
+      try {
+        await this.bus?.emit?.(EVENTS.CHECKS_ERROR, { message });
+      } catch (emitError) {
+        // Reporting failed too; the result below still says what happened.
+      }
       return { success: false, error: message };
     } finally {
       this.running = false;

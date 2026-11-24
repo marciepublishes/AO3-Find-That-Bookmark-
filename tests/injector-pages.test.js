@@ -10,7 +10,7 @@ const injection = require("../modules/injection-manager");
 
 const C = globalThis.AO3LostAndFoundConstants;
 
-function pageMarkup({ owner, me = "marcie" }) {
+function pageMarkup({ owner, me = "marcie", list = "bookmark" }) {
   return `
     <header id="header"><ul id="greeting"><li><a href="/users/${me}">Hi, ${me}!</a></li></ul></header>
     <div id="dashboard">
@@ -21,14 +21,14 @@ function pageMarkup({ owner, me = "marcie" }) {
     </div>
     <div id="main">
       <h2 class="heading">1 - 20 of 21 Bookmarks by ${owner}</h2>
-      <ol class="bookmark index group"><li class="bookmark blurb group work-1"><h4 class="heading"><a href="/works/1">One</a></h4></li></ol>
+      ${list ? `<ol class="${list} index group"><li class="${list} blurb group work-1"><h4 class="heading"><a href="/works/1">One</a></h4></li></ol>` : ""}
       <ol class="pagination actions native-pager"><li><a href="?page=2">2</a></li></ol>
     </div>`;
 }
 
-async function loadInjector({ path, owner, me, deletedTotal = 45 }) {
+async function loadInjector({ path, owner, me, deletedTotal = 45, list }) {
   history.replaceState(null, "", path);
-  document.body.innerHTML = pageMarkup({ owner, me });
+  document.body.innerHTML = pageMarkup({ owner, me, list });
   const sendMessage = jest.fn(async (message) => {
     switch (message.type) {
       case C.MSG.GET_STATS: return { deleted: deletedTotal };
@@ -122,5 +122,52 @@ describe("Back button", () => {
 
     expect(reload).not.toHaveBeenCalled();
     expect(sentTypes(sendMessage)).toContain(C.MSG.GET_LOST_WORKS_FILTER);
+  });
+});
+
+describe("clicking the Deleted sidebar entry", () => {
+  // Click the injected Deleted link; report whether our script took the click
+  // over. The test then cancels the click itself so jsdom doesn't try to
+  // navigate.
+  function clickDeleted(init = {}) {
+    const link = document.querySelector("a[data-ao3-lost-found-count='deleted']");
+    let takenOver = null;
+    const probe = (event) => { takenOver = event.defaultPrevented; event.preventDefault(); };
+    window.addEventListener("click", probe);
+    link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ...init }));
+    window.removeEventListener("click", probe);
+    return takenOver;
+  }
+
+  test("on your profile it navigates normally instead of changing the URL in place", async () => {
+    await loadInjector({ path: "/users/marcie", owner: "marcie", list: null });
+
+    expect(clickDeleted()).toBe(false);
+    expect(location.pathname).toBe("/users/marcie");
+  });
+
+  test("on your works page it navigates normally rather than replacing the works list", async () => {
+    await loadInjector({ path: "/users/marcie/works", owner: "marcie", list: "work" });
+
+    expect(clickDeleted()).toBe(false);
+    expect(document.querySelector(".ao3-lost-found")).toBeNull();
+  });
+
+  test("on your bookmarks page it switches to the Deleted view in place", async () => {
+    await loadInjector({ path: "/users/marcie/bookmarks", owner: "marcie" });
+
+    expect(clickDeleted()).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(location.search).toBe("?ao3_lost_found=deleted");
+    expect(document.querySelector(".ao3-lost-found")).not.toBeNull();
+  });
+
+  test("Ctrl/Cmd-click and middle-click keep the browser's own behaviour", async () => {
+    await loadInjector({ path: "/users/marcie/bookmarks", owner: "marcie" });
+
+    expect(clickDeleted({ ctrlKey: true })).toBe(false);
+    expect(clickDeleted({ metaKey: true })).toBe(false);
+    expect(clickDeleted({ button: 1 })).toBe(false);
+    expect(location.search).toBe("");
   });
 });
