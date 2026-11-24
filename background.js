@@ -100,6 +100,8 @@ async function getStats() {
     outageNotice: await getVisibleOutageNotice(),
     // Keeps the outage write-up in the help panel even after the notice is dismissed.
     outageAffected: Boolean(await getMeta(C.META.OUTAGE_NOTICE)),
+    // A user-started re-check still in progress ({ remaining, total }), or null.
+    recheck: await checkManager.getRecheckStatus(),
     importStatus: await getMeta(C.META.IMPORT_STATUS),
     importLastCompletedPage: await getMeta(C.META.LAST_COMPLETED_PAGE),
     importEstimatedTotalPages: await getMeta(C.META.ESTIMATED_TOTAL_PAGES)

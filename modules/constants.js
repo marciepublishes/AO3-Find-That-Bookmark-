@@ -52,6 +52,9 @@ const AO3LostAndFoundConstants = {
     // Last work that answered 200; HEAD-checked as a canary before a 404 is
     // allowed to count, so a site-wide outage is never read as a deletion.
     CHECK_CANARY: "check:canary",
+    // A user-started re-check still in progress: { ids, total, startedAt },
+    // or null. Lets the popup keep showing it after being closed.
+    RECHECK_STATUS: "check:recheck",
     // When the current AO3 outage was first noticed (null when AO3 is healthy).
     OUTAGE_STARTED: "check:outageStartedAt",
     // One-time re-verification of works flagged from the Oct 29 2026 outage on.

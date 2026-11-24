@@ -168,6 +168,7 @@ class CheckManager {
     if (!work) {
       const trimmed = pending.filter((id) => id !== workId);
       await this.persistQueues(trimmed, queue);
+      await this.markRechecked(workId);
       return { processed: false, paused: false, pending: trimmed };
     }
 
@@ -215,6 +216,7 @@ class CheckManager {
     delete nextWork.confirmedStatusChanged;
     nextWork.priorityScore = getPriorityScore(nextWork, this.now());
     await this.db.works.put(nextWork);
+    await this.markRechecked(workId);
 
     // Add to the fast-lane while collecting strikes, drop once resolved either
     // way. A work with all its strikes but not yet the minimum span waits in the
@@ -314,11 +316,13 @@ class CheckManager {
       return { success: false, error: "A check batch is running; try again in a moment." };
     }
 
-    const reverifying = await this.queueDeletedForRecheck({ since });
+    const ids = await this.queueDeletedForRecheck({ since });
+    if (ids.length > 0) await this.recordRecheck(ids);
     await this.bus?.emit?.(EVENTS.CHECKS_BADGE_REFRESH, { manual: true, processed: 0 });
-    return { success: true, reverifying };
+    return { success: true, reverifying: ids.length };
   }
 
+  // Returns the queued ids. Also used, silently, by the post-outage path.
   async queueDeletedForRecheck({ since = null } = {}) {
     const ids = (await this.db.works.toArray())
       .filter((work) => work.status === STATUS.DELETED
@@ -330,7 +334,48 @@ class CheckManager {
       ids.forEach((id) => pending.add(id));
       await this.setMeta(META.CHECK_PENDING, [...pending]);
     }
-    return ids.length;
+    return ids;
+  }
+
+  // ── Re-check status (user-started re-checks only) ─────────────────────────
+  // The status lives in the database so the popup can keep showing it after
+  // it's closed. A work leaves it once its check result is recorded.
+
+  async readRecheck() {
+    const status = await this.getMeta(META.RECHECK_STATUS);
+    if (!status || !Array.isArray(status.ids)) return null;
+    if (this.now() - (Number(status.startedAt) || 0) > RECHECK_MAX_AGE_MS) {
+      await this.setMeta(META.RECHECK_STATUS, null);
+      return null;
+    }
+    return status;
+  }
+
+  async recordRecheck(ids) {
+    const current = await this.readRecheck();
+    const merged = [...new Set([...(current?.ids || []), ...ids])];
+    await this.setMeta(META.RECHECK_STATUS, {
+      ids: merged,
+      total: merged.length,
+      startedAt: current?.startedAt ?? this.now()
+    });
+  }
+
+  async markRechecked(workId) {
+    const status = await this.getMeta(META.RECHECK_STATUS);
+    if (!status || !Array.isArray(status.ids) || !status.ids.includes(workId)) return;
+    const ids = status.ids.filter((id) => id !== workId);
+    await this.setMeta(META.RECHECK_STATUS, ids.length > 0 ? { ...status, ids } : null);
+  }
+
+  async getRecheckStatus() {
+    const status = await this.readRecheck();
+    if (!status) return null;
+    return {
+      remaining: status.ids.length,
+      total: Number(status.total) || status.ids.length,
+      startedAt: status.startedAt
+    };
   }
 
   // Strikes first recorded at or after `since` are suspect (they came from an
@@ -471,6 +516,9 @@ function planRequeue(works, since = null) {
 
 // How long a healthy canary result is reused for non-strike status changes.
 const HEALTH_CACHE_MS = 5 * 60 * 1000;
+
+// A re-check status this old is treated as finished, so it can't linger.
+const RECHECK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 // AO3's maintenance / "Request temporarily denied" page. It can arrive with a
 // 200, so the status code alone can't be trusted.

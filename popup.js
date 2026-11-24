@@ -34,7 +34,9 @@ function render(stats = {}) {
   renderOutageNotice(outage);
   elements.outageInfo.hidden = !stats.outageAffected;
   // The outage cleanup is automatic; don't offer a competing manual re-check.
-  elements.recheckButton.hidden = deleted === 0 || outagePending;
+  // Nor a second one while a re-check is still running.
+  elements.recheckButton.hidden = deleted === 0 || outagePending || Boolean(stats.recheck);
+  renderRecheckStatus(stats.recheck);
 
   currentFilterUrl = username ? bookmarksFilterUrl(username, C.STATUS.DELETED) : "";
   if (username) {
@@ -61,6 +63,23 @@ function render(stats = {}) {
   } else {
     elements.hint.textContent = `${total.toLocaleString()} bookmarks accounted for`;
     setAlert(false);
+  }
+}
+
+// A re-check runs over the next scheduled checks, so keep saying so until
+// it's done, across popup openings. Only clears text it set itself, so an
+// error from the re-check button stays visible.
+let recheckStatusShown = false;
+function renderRecheckStatus(recheck) {
+  if (recheck) {
+    const remaining = Number(recheck.remaining) || 0;
+    const total = Number(recheck.total) || remaining;
+    elements.recheckResult.textContent =
+      `Re-checking deleted works… ${remaining.toLocaleString()} of ${plural(total, "work")} left. Ones that are still up will come off the list; this can take up to a day.`;
+    recheckStatusShown = true;
+  } else if (recheckStatusShown) {
+    elements.recheckResult.textContent = "";
+    recheckStatusShown = false;
   }
 }
 

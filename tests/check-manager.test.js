@@ -537,3 +537,110 @@ describe("v1.5.0 phase 1: live verification and Cloudflare challenges", () => {
     expect(await make(async () => { throw new TypeError("offline"); }).verifyDeleted(work)).toBe(false);
   });
 });
+
+describe("re-check status survives closing the popup", () => {
+  const DAY = 24 * HOUR;
+  const managerFor = (db, fetchFn, extra = {}) => new CheckManager({
+    bus: { emit: async () => {} },
+    db,
+    delayFn: async () => {},
+    backoffDelayFn: async () => {},
+    fetchFn,
+    ...extra
+  });
+  const deletedWork = (workId) => ({ workId, status: "deleted", checkFailCount: 3, deletedAt: 5, notified: true, dateBookmarked: "2026-05-01", authors: [] });
+
+  test("queueRecheck records the queued works; a second call merges into the same re-check", async () => {
+    const db = makeDb([deletedWork("a"), deletedWork("b")]);
+    let clock = 100;
+    const manager = managerFor(db, async () => ({ status: 200 }), { now: () => clock });
+
+    await manager.queueRecheck();
+    expect(db._meta.get("check:recheck")).toEqual({ ids: ["a", "b"], total: 2, startedAt: 100 });
+
+    await db.works.put(deletedWork("c"));
+    clock = 200;
+    await manager.queueRecheck();
+    expect(db._meta.get("check:recheck")).toEqual({ ids: ["a", "b", "c"], total: 3, startedAt: 100 });
+    expect(await manager.getRecheckStatus()).toEqual({ remaining: 3, total: 3, startedAt: 100 });
+  });
+
+  test("nothing to re-check records no status", async () => {
+    const db = makeDb([{ workId: "1", status: "active", authors: [] }]);
+    const manager = managerFor(db, async () => ({ status: 200 }));
+
+    await manager.queueRecheck();
+
+    expect(db._meta.get("check:recheck")).toBeUndefined();
+    expect(await manager.getRecheckStatus()).toBeNull();
+  });
+
+  test("works come off the status as they are checked, and it clears when the last one is done", async () => {
+    const db = makeDb([deletedWork("fine"), deletedWork("gone")]);
+    const manager = managerFor(db, async (url) => ({ status: url.includes("/works/gone") ? 404 : 200, url }));
+
+    await manager.queueRecheck();
+    await manager.runBatch({ batchSize: 1 });
+    expect(await manager.getRecheckStatus()).toMatchObject({ remaining: 1, total: 2 });
+
+    await manager.runBatch({ batchSize: 1 });
+    expect(await manager.getRecheckStatus()).toBeNull();
+    expect(db._meta.get("check:recheck")).toBeNull();
+  });
+
+  test("a transient error leaves the work on the status", async () => {
+    const db = makeDb([deletedWork("a")]);
+    const manager = managerFor(db, async (url) => ({ status: 503, url }));
+
+    await manager.queueRecheck();
+    await manager.runBatch({ batchSize: 1 });
+
+    expect(await manager.getRecheckStatus()).toMatchObject({ remaining: 1 });
+  });
+
+  test("rate limiting leaves the work on the status", async () => {
+    const db = makeDb([deletedWork("a")]);
+    const manager = managerFor(db, async (url) => ({ status: 429, url }));
+
+    await manager.queueRecheck();
+    await manager.runBatch({ batchSize: 1 });
+
+    expect(await manager.getRecheckStatus()).toMatchObject({ remaining: 1 });
+  });
+
+  test("an unhealthy archive leaves the work on the status", async () => {
+    const db = makeDb([deletedWork("a")]);
+    // The work loads, but the health check gets AO3's maintenance page.
+    const manager = managerFor(db, async (url) => ({ status: 200, url, text: async () => MAINTENANCE_HTML }));
+
+    await manager.queueRecheck();
+    await manager.runBatch({ batchSize: 1 });
+
+    expect((await db.works.get("a")).status).toBe("deleted");
+    expect(await manager.getRecheckStatus()).toMatchObject({ remaining: 1 });
+  });
+
+  test("the automatic post-outage re-check stays silent", async () => {
+    const db = makeDb([
+      { workId: "1", status: "active", checkFailCount: 0, dateBookmarked: "2026-05-01", authors: [] },
+      { workId: "during", status: "deleted", checkFailCount: 3, deletedAt: 900, authors: [] }
+    ]);
+    db._meta.set("check:outageStartedAt", 500);
+    db._meta.set("check:queue", ["1"]);
+    const manager = managerFor(db, async (url) => ({ status: 200, url }), { now: () => 2000 });
+
+    await manager.runBatch({ batchSize: 1 });
+
+    expect(db._meta.get("check:pending")).toEqual(["during"]);
+    expect(db._meta.get("check:recheck")).toBeUndefined();
+  });
+
+  test("a status older than 7 days is treated as finished and cleared", async () => {
+    const db = makeDb([]);
+    db._meta.set("check:recheck", { ids: ["x"], total: 1, startedAt: 0 });
+    const manager = managerFor(db, async () => ({ status: 200 }), { now: () => 8 * DAY });
+
+    expect(await manager.getRecheckStatus()).toBeNull();
+    expect(db._meta.get("check:recheck")).toBeNull();
+  });
+});
